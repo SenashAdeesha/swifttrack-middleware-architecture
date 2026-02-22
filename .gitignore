@@ -1,0 +1,10 @@
+# Ignore
+.DS_Store
+node_modules/
+*.log
+.env
+__pycache__/
+*.pyc
+.venv/
+.idea/
+.vscode/
