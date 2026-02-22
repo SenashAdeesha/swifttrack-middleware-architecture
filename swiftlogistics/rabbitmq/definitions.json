@@ -1,0 +1,519 @@
+{
+  "rabbit_version": "3.12",
+  "users": [
+    {
+      "name": "swifttrack",
+      "password_hash": "swifttrack_mq_2026",
+      "hashing_algorithm": "rabbit_password_hashing_sha256",
+      "tags": "administrator"
+    }
+  ],
+  "vhosts": [
+    {
+      "name": "swifttrack_vhost"
+    }
+  ],
+  "permissions": [
+    {
+      "user": "swifttrack",
+      "vhost": "swifttrack_vhost",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    }
+  ],
+  "exchanges": [
+    {
+      "name": "swifttrack.orders",
+      "vhost": "swifttrack_vhost",
+      "type": "topic",
+      "durable": true,
+      "auto_delete": false
+    },
+    {
+      "name": "swifttrack.warehouse",
+      "vhost": "swifttrack_vhost",
+      "type": "direct",
+      "durable": true,
+      "auto_delete": false
+    },
+    {
+      "name": "swifttrack.notifications",
+      "vhost": "swifttrack_vhost",
+      "type": "fanout",
+      "durable": true,
+      "auto_delete": false
+    },
+    {
+      "name": "swifttrack.saga",
+      "vhost": "swifttrack_vhost",
+      "type": "topic",
+      "durable": true,
+      "auto_delete": false
+    },
+    {
+      "name": "swifttrack.dlx",
+      "vhost": "swifttrack_vhost",
+      "type": "direct",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    }
+  ],
+  "queues": [
+    {
+      "name": "orders.created",
+      "vhost": "swifttrack_vhost",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "swifttrack.dlx",
+        "x-dead-letter-routing-key": "orders.created.dlq",
+        "x-message-ttl": 3600000
+      }
+    },
+    {
+      "name": "orders.updated",
+      "vhost": "swifttrack_vhost",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "swifttrack.dlx",
+        "x-dead-letter-routing-key": "orders.updated.dlq",
+        "x-message-ttl": 3600000
+      }
+    },
+    {
+      "name": "orders.status.changed",
+      "vhost": "swifttrack_vhost",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "swifttrack.dlx",
+        "x-dead-letter-routing-key": "orders.status.dlq",
+        "x-message-ttl": 3600000
+      }
+    },
+    {
+      "name": "warehouse.receive",
+      "vhost": "swifttrack_vhost",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "swifttrack.dlx",
+        "x-dead-letter-routing-key": "warehouse.receive.dlq",
+        "x-message-ttl": 3600000,
+        "x-max-priority": 10
+      }
+    },
+    {
+      "name": "warehouse.dispatch",
+      "vhost": "swifttrack_vhost",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "swifttrack.dlx",
+        "x-dead-letter-routing-key": "warehouse.dispatch.dlq",
+        "x-message-ttl": 3600000,
+        "x-max-priority": 10
+      }
+    },
+    {
+      "name": "warehouse.inventory",
+      "vhost": "swifttrack_vhost",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "swifttrack.dlx",
+        "x-dead-letter-routing-key": "warehouse.inventory.dlq",
+        "x-message-ttl": 3600000
+      }
+    },
+    {
+      "name": "notifications.email",
+      "vhost": "swifttrack_vhost",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "swifttrack.dlx",
+        "x-dead-letter-routing-key": "notifications.email.dlq",
+        "x-message-ttl": 3600000
+      }
+    },
+    {
+      "name": "notifications.sms",
+      "vhost": "swifttrack_vhost",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "swifttrack.dlx",
+        "x-dead-letter-routing-key": "notifications.sms.dlq",
+        "x-message-ttl": 3600000
+      }
+    },
+    {
+      "name": "notifications.push",
+      "vhost": "swifttrack_vhost",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "swifttrack.dlx",
+        "x-dead-letter-routing-key": "notifications.push.dlq",
+        "x-message-ttl": 3600000
+      }
+    },
+    {
+      "name": "saga.order.create",
+      "vhost": "swifttrack_vhost",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "swifttrack.dlx",
+        "x-dead-letter-routing-key": "saga.order.create.dlq",
+        "x-message-ttl": 3600000
+      }
+    },
+    {
+      "name": "saga.order.compensate",
+      "vhost": "swifttrack_vhost",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "swifttrack.dlx",
+        "x-dead-letter-routing-key": "saga.compensate.dlq",
+        "x-message-ttl": 3600000
+      }
+    },
+    {
+      "name": "saga.events",
+      "vhost": "swifttrack_vhost",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "swifttrack.dlx",
+        "x-dead-letter-routing-key": "saga.events.dlq",
+        "x-message-ttl": 3600000
+      }
+    },
+    {
+      "name": "dlq.orders.created",
+      "vhost": "swifttrack_vhost",
+      "durable": true,
+      "auto_delete": false
+    },
+    {
+      "name": "dlq.orders.updated",
+      "vhost": "swifttrack_vhost",
+      "durable": true,
+      "auto_delete": false
+    },
+    {
+      "name": "dlq.orders.status",
+      "vhost": "swifttrack_vhost",
+      "durable": true,
+      "auto_delete": false
+    },
+    {
+      "name": "dlq.warehouse.receive",
+      "vhost": "swifttrack_vhost",
+      "durable": true,
+      "auto_delete": false
+    },
+    {
+      "name": "dlq.warehouse.dispatch",
+      "vhost": "swifttrack_vhost",
+      "durable": true,
+      "auto_delete": false
+    },
+    {
+      "name": "dlq.warehouse.inventory",
+      "vhost": "swifttrack_vhost",
+      "durable": true,
+      "auto_delete": false
+    },
+    {
+      "name": "dlq.notifications",
+      "vhost": "swifttrack_vhost",
+      "durable": true,
+      "auto_delete": false
+    },
+    {
+      "name": "dlq.saga",
+      "vhost": "swifttrack_vhost",
+      "durable": true,
+      "auto_delete": false
+    },
+    {
+      "name": "middleware_queue",
+      "vhost": "swifttrack_vhost",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "swifttrack.dlx",
+        "x-dead-letter-routing-key": "middleware.dlq",
+        "x-message-ttl": 3600000
+      }
+    },
+    {
+      "name": "wms_queue",
+      "vhost": "swifttrack_vhost",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "swifttrack.dlx",
+        "x-dead-letter-routing-key": "wms.dlq",
+        "x-message-ttl": 3600000,
+        "x-max-priority": 10
+      }
+    },
+    {
+      "name": "websocket_queue",
+      "vhost": "swifttrack_vhost",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "swifttrack.dlx",
+        "x-dead-letter-routing-key": "websocket.dlq",
+        "x-message-ttl": 3600000
+      }
+    },
+    {
+      "name": "driver_assignments_queue",
+      "vhost": "swifttrack_vhost",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "swifttrack.dlx",
+        "x-dead-letter-routing-key": "driver_assignments.dlq",
+        "x-message-ttl": 3600000
+      }
+    },
+    {
+      "name": "dlq.middleware",
+      "vhost": "swifttrack_vhost",
+      "durable": true,
+      "auto_delete": false
+    },
+    {
+      "name": "dlq.wms",
+      "vhost": "swifttrack_vhost",
+      "durable": true,
+      "auto_delete": false
+    },
+    {
+      "name": "dlq.websocket",
+      "vhost": "swifttrack_vhost",
+      "durable": true,
+      "auto_delete": false
+    }
+  ],
+  "bindings": [
+    {
+      "source": "swifttrack.orders",
+      "vhost": "swifttrack_vhost",
+      "destination": "orders.created",
+      "destination_type": "queue",
+      "routing_key": "order.created"
+    },
+    {
+      "source": "swifttrack.orders",
+      "vhost": "swifttrack_vhost",
+      "destination": "orders.updated",
+      "destination_type": "queue",
+      "routing_key": "order.updated"
+    },
+    {
+      "source": "swifttrack.orders",
+      "vhost": "swifttrack_vhost",
+      "destination": "orders.status.changed",
+      "destination_type": "queue",
+      "routing_key": "order.status.*"
+    },
+    {
+      "source": "swifttrack.warehouse",
+      "vhost": "swifttrack_vhost",
+      "destination": "warehouse.receive",
+      "destination_type": "queue",
+      "routing_key": "warehouse.receive"
+    },
+    {
+      "source": "swifttrack.warehouse",
+      "vhost": "swifttrack_vhost",
+      "destination": "warehouse.dispatch",
+      "destination_type": "queue",
+      "routing_key": "warehouse.dispatch"
+    },
+    {
+      "source": "swifttrack.warehouse",
+      "vhost": "swifttrack_vhost",
+      "destination": "warehouse.inventory",
+      "destination_type": "queue",
+      "routing_key": "warehouse.inventory"
+    },
+    {
+      "source": "swifttrack.notifications",
+      "vhost": "swifttrack_vhost",
+      "destination": "notifications.email",
+      "destination_type": "queue",
+      "routing_key": ""
+    },
+    {
+      "source": "swifttrack.notifications",
+      "vhost": "swifttrack_vhost",
+      "destination": "notifications.sms",
+      "destination_type": "queue",
+      "routing_key": ""
+    },
+    {
+      "source": "swifttrack.notifications",
+      "vhost": "swifttrack_vhost",
+      "destination": "notifications.push",
+      "destination_type": "queue",
+      "routing_key": ""
+    },
+    {
+      "source": "swifttrack.saga",
+      "vhost": "swifttrack_vhost",
+      "destination": "saga.order.create",
+      "destination_type": "queue",
+      "routing_key": "saga.order.create"
+    },
+    {
+      "source": "swifttrack.saga",
+      "vhost": "swifttrack_vhost",
+      "destination": "saga.order.compensate",
+      "destination_type": "queue",
+      "routing_key": "saga.order.compensate"
+    },
+    {
+      "source": "swifttrack.saga",
+      "vhost": "swifttrack_vhost",
+      "destination": "saga.events",
+      "destination_type": "queue",
+      "routing_key": "saga.event.*"
+    },
+    {
+      "source": "swifttrack.dlx",
+      "vhost": "swifttrack_vhost",
+      "destination": "dlq.orders.created",
+      "destination_type": "queue",
+      "routing_key": "orders.created.dlq"
+    },
+    {
+      "source": "swifttrack.dlx",
+      "vhost": "swifttrack_vhost",
+      "destination": "dlq.orders.updated",
+      "destination_type": "queue",
+      "routing_key": "orders.updated.dlq"
+    },
+    {
+      "source": "swifttrack.dlx",
+      "vhost": "swifttrack_vhost",
+      "destination": "dlq.orders.status",
+      "destination_type": "queue",
+      "routing_key": "orders.status.dlq"
+    },
+    {
+      "source": "swifttrack.dlx",
+      "vhost": "swifttrack_vhost",
+      "destination": "dlq.warehouse.receive",
+      "destination_type": "queue",
+      "routing_key": "warehouse.receive.dlq"
+    },
+    {
+      "source": "swifttrack.dlx",
+      "vhost": "swifttrack_vhost",
+      "destination": "dlq.warehouse.dispatch",
+      "destination_type": "queue",
+      "routing_key": "warehouse.dispatch.dlq"
+    },
+    {
+      "source": "swifttrack.dlx",
+      "vhost": "swifttrack_vhost",
+      "destination": "dlq.warehouse.inventory",
+      "destination_type": "queue",
+      "routing_key": "warehouse.inventory.dlq"
+    },
+    {
+      "source": "swifttrack.dlx",
+      "vhost": "swifttrack_vhost",
+      "destination": "dlq.notifications",
+      "destination_type": "queue",
+      "routing_key": "notifications.*.dlq"
+    },
+    {
+      "source": "swifttrack.dlx",
+      "vhost": "swifttrack_vhost",
+      "destination": "dlq.saga",
+      "destination_type": "queue",
+      "routing_key": "saga.*.dlq"
+    },
+    {
+      "source": "swifttrack.saga",
+      "vhost": "swifttrack_vhost",
+      "destination": "middleware_queue",
+      "destination_type": "queue",
+      "routing_key": "saga.middleware.*"
+    },
+    {
+      "source": "swifttrack.saga",
+      "vhost": "swifttrack_vhost",
+      "destination": "wms_queue",
+      "destination_type": "queue",
+      "routing_key": "saga.wms.*"
+    },
+    {
+      "source": "swifttrack.notifications",
+      "vhost": "swifttrack_vhost",
+      "destination": "websocket_queue",
+      "destination_type": "queue",
+      "routing_key": ""
+    },
+    {
+      "source": "swifttrack.orders",
+      "vhost": "swifttrack_vhost",
+      "destination": "middleware_queue",
+      "destination_type": "queue",
+      "routing_key": "order.*"
+    },
+    {
+      "source": "swifttrack.orders",
+      "vhost": "swifttrack_vhost",
+      "destination": "driver_assignments_queue",
+      "destination_type": "queue",
+      "routing_key": "order.driver.*"
+    },
+    {
+      "source": "swifttrack.dlx",
+      "vhost": "swifttrack_vhost",
+      "destination": "dlq.middleware",
+      "destination_type": "queue",
+      "routing_key": "middleware.dlq"
+    },
+    {
+      "source": "swifttrack.dlx",
+      "vhost": "swifttrack_vhost",
+      "destination": "dlq.wms",
+      "destination_type": "queue",
+      "routing_key": "wms.dlq"
+    },
+    {
+      "source": "swifttrack.dlx",
+      "vhost": "swifttrack_vhost",
+      "destination": "dlq.websocket",
+      "destination_type": "queue",
+      "routing_key": "websocket.dlq"
+    }
+  ],
+  "policies": [
+    {
+      "vhost": "swifttrack_vhost",
+      "name": "ha-all",
+      "pattern": ".*",
+      "definition": {
+        "ha-mode": "all",
+        "ha-sync-mode": "automatic"
+      }
+    }
+  ]
+}
