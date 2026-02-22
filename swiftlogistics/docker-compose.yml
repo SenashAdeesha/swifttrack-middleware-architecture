@@ -1,0 +1,380 @@
+# ============================================================================
+# SwiftTrack Logistics - Docker Compose Orchestration
+# ============================================================================
+# Architecture: Microservices with RabbitMQ messaging, PostgreSQL persistence
+# Implements: Saga Pattern, Dead Letter Queues, Health Checks, JWT Auth
+# ============================================================================
+
+services:
+  # ==========================================================================
+  # INFRASTRUCTURE SERVICES
+  # ==========================================================================
+  
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: swifttrack-postgres
+    environment:
+      POSTGRES_DB: swifttrack
+      POSTGRES_USER: swifttrack_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-swifttrack_secure_pass_2026}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "5433:5432"
+    networks:
+      - swifttrack-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U swifttrack_user -d swifttrack"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # RabbitMQ Message Broker
+  rabbitmq:
+    image: rabbitmq:3.12-management-alpine
+    container_name: swifttrack-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-swifttrack}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-swifttrack_mq_2026}
+      RABBITMQ_DEFAULT_VHOST: swifttrack_vhost
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    ports:
+      - "5672:5672"   # AMQP protocol
+      - "15672:15672" # Management UI
+    networks:
+      - swifttrack-network
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  # ==========================================================================
+  # APPLICATION SERVICES
+  # ==========================================================================
+
+  # API Gateway - Single entry point (EXPOSED TO OUTSIDE)
+  api-gateway:
+    build:
+      context: ./api-gateway
+      dockerfile: Dockerfile
+    container_name: swifttrack-api-gateway
+    environment:
+      - FLASK_ENV=${FLASK_ENV:-production}
+      - JWT_SECRET=${JWT_SECRET_KEY:-swifttrack_jwt_secret_key_2026}
+      - DB_HOST=postgres
+      - DB_NAME=swifttrack
+      - DB_USER=swifttrack_user
+      - DB_PASSWORD=${POSTGRES_PASSWORD:-swifttrack_secure_pass_2026}
+      - MIDDLEWARE_SERVICE_URL=http://middleware-service:5001
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_USER=${RABBITMQ_USER:-swifttrack}
+      - RABBITMQ_PASS=${RABBITMQ_PASS:-swifttrack_mq_2026}
+      - RABBITMQ_VHOST=swifttrack_vhost
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    ports:
+      - "5002:5002"  # Only API Gateway exposed externally
+    networks:
+      - swifttrack-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      middleware-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  # Middleware Service - Orchestrates business logic and Saga transactions
+  middleware-service:
+    build:
+      context: ./middleware-service
+      dockerfile: Dockerfile
+    environment:
+      - FLASK_ENV=${FLASK_ENV:-production}
+      - DB_HOST=postgres
+      - DB_NAME=swifttrack
+      - DB_USER=swifttrack_user
+      - DB_PASSWORD=${POSTGRES_PASSWORD:-swifttrack_secure_pass_2026}
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_USER=${RABBITMQ_USER:-swifttrack}
+      - RABBITMQ_PASS=${RABBITMQ_PASS:-swifttrack_mq_2026}
+      - RABBITMQ_VHOST=swifttrack_vhost
+      - CMS_SERVICE_URL=http://cms-service:5003
+      - ROS_SERVICE_URL=http://ros-service:5004
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    networks:
+      - swifttrack-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+    deploy:
+      replicas: 2  # Horizontal scaling for stateless middleware
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  # CMS Service - SOAP/XML Mock Service (Customer Management)
+  cms-service:
+    build:
+      context: ./cms-service
+      dockerfile: Dockerfile
+    container_name: swifttrack-cms
+    environment:
+      - FLASK_ENV=${FLASK_ENV:-production}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=swifttrack
+      - POSTGRES_USER=swifttrack_user
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-swifttrack_secure_pass_2026}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    networks:
+      - swifttrack-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+
+  # ROS Service - REST/JSON Mock Service (Route Optimization)
+  ros-service:
+    build:
+      context: ./ros-service
+      dockerfile: Dockerfile
+    environment:
+      - FLASK_ENV=${FLASK_ENV:-production}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=swifttrack
+      - POSTGRES_USER=swifttrack_user
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-swifttrack_secure_pass_2026}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    networks:
+      - swifttrack-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5004/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+    deploy:
+      replicas: 2  # Horizontal scaling
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+
+  # WMS Service - Warehouse Management (Message-based via RabbitMQ)
+  wms-service:
+    build:
+      context: ./wms-service
+      dockerfile: Dockerfile
+    environment:
+      - DB_HOST=postgres
+      - DB_NAME=swifttrack
+      - DB_USER=swifttrack_user
+      - DB_PASSWORD=${POSTGRES_PASSWORD:-swifttrack_secure_pass_2026}
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_USER=${RABBITMQ_USER:-swifttrack}
+      - RABBITMQ_PASS=${RABBITMQ_PASS:-swifttrack_mq_2026}
+      - RABBITMQ_VHOST=swifttrack_vhost
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    ports:
+      - "5005:5005"
+    networks:
+      - swifttrack-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5005/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+    deploy:
+      replicas: 2  # Multiple consumers for high throughput
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+
+  # Notification Service - Handles async notifications
+  notification-service:
+    build:
+      context: ./notification-service
+      dockerfile: Dockerfile
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=swifttrack
+      - POSTGRES_USER=swifttrack_user
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-swifttrack_secure_pass_2026}
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_USER=${RABBITMQ_USER:-swifttrack}
+      - RABBITMQ_PASS=${RABBITMQ_PASS:-swifttrack_mq_2026}
+      - RABBITMQ_VHOST=swifttrack_vhost
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    networks:
+      - swifttrack-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.connect(('localhost', 5006)); s.close()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+
+  # Saga Orchestrator - Manages distributed transactions
+  saga-orchestrator:
+    build:
+      context: ./saga-orchestrator
+      dockerfile: Dockerfile
+    container_name: swifttrack-saga
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=swifttrack
+      - POSTGRES_USER=swifttrack_user
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-swifttrack_secure_pass_2026}
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_USER=${RABBITMQ_USER:-swifttrack}
+      - RABBITMQ_PASS=${RABBITMQ_PASS:-swifttrack_mq_2026}
+      - RABBITMQ_VHOST=swifttrack_vhost
+      - CMS_SERVICE_URL=http://cms-service:5003
+      - ROS_SERVICE_URL=http://ros-service:5004
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    networks:
+      - swifttrack-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.connect(('localhost', 5007)); s.close()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+  # WebSocket Service - Real-time updates via Socket.IO
+  websocket-service:
+    build:
+      context: ./websocket-service
+      dockerfile: Dockerfile
+    container_name: swifttrack-websocket
+    environment:
+      - SECRET_KEY=${SECRET_KEY:-swifttrack_websocket_secret_2026}
+      - JWT_SECRET=${JWT_SECRET_KEY:-swifttrack_jwt_secret_key_2026}
+      - DB_HOST=postgres
+      - DB_NAME=swifttrack
+      - DB_USER=swifttrack_user
+      - DB_PASSWORD=${POSTGRES_PASSWORD:-swifttrack_secure_pass_2026}
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_USER=${RABBITMQ_USER:-swifttrack}
+      - RABBITMQ_PASS=${RABBITMQ_PASS:-swifttrack_mq_2026}
+      - RABBITMQ_VHOST=swifttrack_vhost
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    ports:
+      - "5006:5006"  # WebSocket port exposed
+    networks:
+      - swifttrack-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5006/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+
+# ==========================================================================
+# NETWORKS
+# ==========================================================================
+networks:
+  swifttrack-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+# ==========================================================================
+# VOLUMES
+# ==========================================================================
+volumes:
+  postgres_data:
+    driver: local
+  rabbitmq_data:
+    driver: local
