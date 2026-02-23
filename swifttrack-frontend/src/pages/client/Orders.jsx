@@ -5,7 +5,7 @@ import {
   RefreshCw, Copy, ArrowUpDown, MapPin, Clock, Truck,
 } from 'lucide-react';
 import { Card, CardHeader, CardTitle, Badge, Button, Modal, EmptyState, TableSkeleton } from '../../components/common';
-import { ordersAPI } from '../../services/api';
+import { ordersAPI, wsService } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import toast from 'react-hot-toast';
 
@@ -22,8 +22,80 @@ const Orders = () => {
   const [showCancelModal, setShowCancelModal] = useState(false);
   const [cancellingId, setCancellingId] = useState(null);
   const [cancelReason, setCancelReason] = useState('');
+  // Middleware pipeline sub-stages per order: { orderId: 'ready'|'loaded'|'dispatched' }
+  const [middlewareStages, setMiddlewareStages] = useState({});
+  const [flashIds, setFlashIds] = useState(new Set());
 
   useEffect(() => { fetchOrders(); }, [user?.id]);
+
+  // Real-time order status updates via WebSocket
+  useEffect(() => {
+    if (!user?.id) return;
+
+    wsService.connect();
+    const token = localStorage.getItem('swifttrack_token');
+    if (token) wsService.authenticate(token);
+
+    const triggerFlash = (id) => {
+      const sid = String(id);
+      setFlashIds(prev => new Set(prev).add(sid));
+      setTimeout(() => setFlashIds(prev => { const n = new Set(prev); n.delete(sid); return n; }), 3000);
+    };
+
+    const unsubStatus = wsService.on('order_status_update', (data) => {
+      const orderId = String(data.orderId || data.order_id);
+      const newStatus = data.status;
+      if (!orderId || !newStatus) return;
+      // While middleware pipeline is running, keep badge as "Pending"
+      // — pipeline dots (Ready/Loaded/Dispatched/Pending) show the progress
+      if (['confirmed', 'in_warehouse'].includes(newStatus)) return;
+      setOrders(prev => prev.map(o =>
+        String(o.id) === orderId ? { ...o, status: newStatus } : o
+      ));
+      setSelectedOrder(prev =>
+        prev && String(prev.id) === orderId ? { ...prev, status: newStatus } : prev
+      );
+      triggerFlash(orderId);
+      if (newStatus === 'delivered') toast.success(`Order ${orderId} delivered!`);
+      else if (newStatus === 'failed') toast.error(`Order ${orderId} delivery failed`);
+      else if (newStatus === 'out_for_delivery') toast(`Order ${orderId} is out for delivery`, { icon: '🚚' });
+      // Clear pipeline once order moves past warehouse
+      if (['out_for_delivery', 'delivered', 'failed', 'cancelled'].includes(newStatus)) {
+        setMiddlewareStages(prev => { const n = { ...prev }; delete n[orderId]; return n; });
+      }
+    });
+
+    const unsubDelivered = wsService.on('delivery_completed', (data) => {
+      const orderId = String(data.orderId || data.order_id);
+      if (!orderId) return;
+      setOrders(prev => prev.map(o =>
+        String(o.id) === orderId ? { ...o, status: 'delivered' } : o
+      ));
+      setSelectedOrder(prev =>
+        prev && String(prev.id) === orderId ? { ...prev, status: 'delivered' } : prev
+      );
+      toast.success(`🎉 Your order ${orderId} has been delivered!`);
+    });
+
+    const unsubMiddleware = wsService.on('middleware_update', (data) => {
+      const orderId = String(data.orderId || data.order_id);
+      const stage = data.stage;
+      if (!orderId || !stage) return;
+      setMiddlewareStages(prev => ({ ...prev, [orderId]: stage }));
+      triggerFlash(orderId);
+    });
+
+    const unsubNewOrder = wsService.on('new_order', () => {
+      fetchOrders();
+    });
+
+    return () => {
+      unsubStatus();
+      unsubDelivered();
+      unsubMiddleware();
+      unsubNewOrder();
+    };
+  }, [user?.id, user?.role]);
 
   const fetchOrders = async () => {
     setLoading(true);
@@ -75,11 +147,15 @@ const Orders = () => {
   };
 
   const getStatusColor = (status) => {
-    const colors = { pending: 'warning', in_warehouse: 'info', out_for_delivery: 'primary', delivered: 'success', failed: 'danger', cancelled: 'gray' };
+    const colors = { pending: 'warning', confirmed: 'warning', in_warehouse: 'warning', out_for_delivery: 'primary', delivered: 'success', failed: 'danger', cancelled: 'gray' };
     return colors[status] || 'gray';
   };
 
-  const getStatusLabel = (status) => status?.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) || status;
+  const getStatusLabel = (status) => {
+    const labels = { confirmed: 'Pending', in_warehouse: 'Pending' };
+    if (labels[status]) return labels[status];
+    return status?.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) || status;
+  };
 
   const statusOptions = [
     { value: 'all', label: 'All Status' },
@@ -226,7 +302,45 @@ const Orders = () => {
                         <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{order.packageType} · {order.packageWeight} kg</p>
                       </div>
                     </td>
-                    <td className="py-4 px-6"><Badge variant={getStatusColor(order.status)} dot>{getStatusLabel(order.status)}</Badge></td>
+                    <td className="py-4 px-6">
+                      <span className={`inline-block transition-all duration-300 ${
+                        flashIds.has(String(order.id)) ? 'scale-110 ring-2 ring-offset-1 ring-primary-400 rounded-full' : ''
+                      }`}>
+                        <Badge variant={getStatusColor(order.status)} dot>{getStatusLabel(order.status)}</Badge>
+                      </span>
+                      {flashIds.has(String(order.id)) && (
+                        <span className="ml-1.5 inline-block w-2 h-2 rounded-full bg-green-400 animate-ping" />
+                      )}
+                      {/* Middleware pipeline: Ready → Loaded → Dispatched */}
+                      {middlewareStages[String(order.id)] && (() => {
+                        const STAGES = [
+                          { key: 'ready',      label: 'Ready'      },
+                          { key: 'loaded',     label: 'Loaded'     },
+                          { key: 'dispatched', label: 'Dispatched' },
+                          { key: 'pending',    label: 'Pending'    },
+                        ];
+                        const currentIdx = STAGES.findIndex(s => s.key === middlewareStages[String(order.id)]);
+                        return (
+                          <div className="flex items-center gap-0.5 mt-1.5">
+                            {STAGES.map((s, i) => (
+                              <div key={s.key} className="flex items-center gap-0.5">
+                                <div className={`w-1.5 h-1.5 rounded-full ${
+                                  i <= currentIdx ? 'bg-primary-500' : 'bg-gray-300 dark:bg-slate-600'
+                                }`} />
+                                <span className={`text-[9px] font-medium ${
+                                  i <= currentIdx ? 'text-primary-600 dark:text-primary-400' : 'text-gray-400'
+                                }`}>{s.label}</span>
+                                {i < STAGES.length - 1 && (
+                                  <div className={`w-3 h-px ml-0.5 ${
+                                    i < currentIdx ? 'bg-primary-400' : 'bg-gray-200 dark:bg-slate-700'
+                                  }`} />
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })()}
+                    </td>
                     <td className="py-4 px-6"><span className="text-gray-700 dark:text-gray-300">{order.driverName || '-'}</span></td>
                     <td className="py-4 px-6"><span className="text-gray-500 dark:text-gray-400">{new Date(order.createdAt).toLocaleDateString()}</span></td>
                     <td className="py-4 px-6">
