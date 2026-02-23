@@ -171,45 +171,157 @@ def receive_package(order_id, package_type, priority):
         cursor.execute("""
             INSERT INTO warehouse_inventory (order_id, location_code, shelf_number, status)
             VALUES (%s, %s, %s, 'received')
-            ON CONFLICT (order_id) DO UPDATE 
+            ON CONFLICT (order_id) DO UPDATE
             SET status = 'received', received_at = CURRENT_TIMESTAMP
             RETURNING id
         """, (order_id, location_code, shelf_number))
-        
-        # Update order status
+        conn.commit()
+
+        # Fetch client_user_id early (needed for all middleware realtime broadcasts)
         cursor.execute("""
-            UPDATE orders SET status = 'in_warehouse', updated_at = CURRENT_TIMESTAMP
+            SELECT c.user_id FROM orders o
+            JOIN clients c ON o.client_id = c.id
+            WHERE o.id = %s
+        """, (order_id,))
+        row = cursor.fetchone()
+        client_user_id = str(row['user_id']) if row else None
+        conn.close()
+
+        # ---------------------------------------------------------------
+        # MIDDLEWARE STAGE 1 of 3: 'ready' — order received by middleware
+        # ---------------------------------------------------------------
+        publish_message('swifttrack.notifications', 'realtime.update', {
+            'type': 'middleware_update',
+            'order_id': order_id,
+            'orderId': order_id,
+            'stage': 'ready',
+            'data': {
+                'client_user_id': client_user_id,
+                'label': 'Middleware Ready',
+                'timestamp': datetime.utcnow().isoformat()
+            }
+        })
+
+        time.sleep(2)
+
+        # ------------------------------------------------------------------
+        # STEP 1 of 2: pending -> confirmed (saga validation complete)
+        # ------------------------------------------------------------------
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE orders SET status = 'confirmed', updated_at = CURRENT_TIMESTAMP
             WHERE id = %s AND status = 'pending'
         """, (order_id,))
-        
-        # Add timeline entry
+        cursor.execute("""
+            INSERT INTO order_timeline (order_id, status, description)
+            VALUES (%s, 'confirmed', 'Order validated and confirmed by system')
+        """, (order_id,))
+        conn.commit()
+        conn.close()
+
+        logger.info("Order confirmed", order_id=order_id)
+
+        # Broadcast order status update: confirmed
+        publish_message('swifttrack.notifications', 'realtime.update', {
+            'type': 'order_status_update',
+            'order_id': order_id,
+            'orderId': order_id,
+            'status': 'confirmed',
+            'data': {
+                'client_user_id': client_user_id,
+                'timestamp': datetime.utcnow().isoformat()
+            }
+        })
+
+        # ---------------------------------------------------------------
+        # MIDDLEWARE STAGE 2 of 3: 'loaded' — package loaded into system
+        # ---------------------------------------------------------------
+        publish_message('swifttrack.notifications', 'realtime.update', {
+            'type': 'middleware_update',
+            'order_id': order_id,
+            'orderId': order_id,
+            'stage': 'loaded',
+            'data': {
+                'client_user_id': client_user_id,
+                'label': 'Package Loaded',
+                'timestamp': datetime.utcnow().isoformat()
+            }
+        })
+
+        # 2-second gap between pipeline stages
+        time.sleep(2)
+
+        # ------------------------------------------------------------------
+        # STEP 2 of 2: confirmed -> in_warehouse
+        # ------------------------------------------------------------------
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Mark inventory slot as received
+        cursor.execute("""
+            UPDATE warehouse_inventory SET status = 'received' WHERE order_id = %s
+        """, (order_id,))
+        cursor.execute("""
+            UPDATE orders SET status = 'in_warehouse', updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s AND status = 'confirmed'
+        """, (order_id,))
         cursor.execute("""
             INSERT INTO order_timeline (order_id, status, description)
             VALUES (%s, 'in_warehouse', %s)
         """, (order_id, f'Package received at warehouse - Location: {location_code}, Shelf: {shelf_number}'))
-        
         conn.commit()
         conn.close()
-        
-        logger.info("Package received successfully", order_id=order_id, 
+
+        logger.info("Package received successfully", order_id=order_id,
                    location=location_code, shelf=shelf_number)
-        
-        # Publish confirmation event
-        publish_message('swifttrack.orders', 'order.status.in_warehouse', {
+
+        # Broadcast order status update: in_warehouse
+        publish_message('swifttrack.notifications', 'realtime.update', {
+            'type': 'order_status_update',
             'order_id': order_id,
+            'orderId': order_id,
             'status': 'in_warehouse',
-            'warehouse_location': location_code,
-            'shelf': shelf_number,
-            'timestamp': datetime.utcnow().isoformat()
+            'data': {
+                'client_user_id': client_user_id,
+                'warehouse_location': location_code,
+                'shelf': shelf_number,
+                'timestamp': datetime.utcnow().isoformat()
+            }
         })
-        
-        # Send notification
-        publish_message('swifttrack.notifications', '', {
-            'type': 'package_received',
+
+        # ---------------------------------------------------------------
+        # MIDDLEWARE STAGE 3 of 3: 'dispatched' — package dispatched to warehouse floor
+        # ---------------------------------------------------------------
+        publish_message('swifttrack.notifications', 'realtime.update', {
+            'type': 'middleware_update',
             'order_id': order_id,
-            'message': f'Package for order {order_id} received at warehouse'
+            'orderId': order_id,
+            'stage': 'dispatched',
+            'data': {
+                'client_user_id': client_user_id,
+                'label': 'Dispatched to Warehouse',
+                'warehouse_location': location_code,
+                'timestamp': datetime.utcnow().isoformat()
+            }
         })
-        
+
+        # ---------------------------------------------------------------
+        # MIDDLEWARE STAGE 4 of 4: 'pending' — awaiting driver assignment
+        # ---------------------------------------------------------------
+        time.sleep(1)
+        publish_message('swifttrack.notifications', 'realtime.update', {
+            'type': 'middleware_update',
+            'order_id': order_id,
+            'orderId': order_id,
+            'stage': 'pending',
+            'data': {
+                'client_user_id': client_user_id,
+                'label': 'Pending Driver Assignment',
+                'timestamp': datetime.utcnow().isoformat()
+            }
+        })
+
         return True
         
     except Exception as e:
@@ -263,19 +375,33 @@ def dispatch_package(order_id, driver_id=None):
             VALUES (%s, 'out_for_delivery', 'Package dispatched from warehouse - Out for delivery')
         """, (order_id,))
         
+        # Fetch client_user_id
+        cursor.execute("""
+            SELECT c.user_id FROM orders o
+            JOIN clients c ON o.client_id = c.id
+            WHERE o.id = %s
+        """, (order_id,))
+        row = cursor.fetchone()
+        client_user_id = str(row['user_id']) if row else None
+
         conn.commit()
         conn.close()
-        
+
         logger.info("Package dispatched successfully", order_id=order_id)
-        
-        # Publish dispatch event
-        publish_message('swifttrack.orders', 'order.status.out_for_delivery', {
+
+        # Broadcast 'out_for_delivery' to WebSocket clients via realtime routing
+        publish_message('swifttrack.notifications', 'realtime.update', {
+            'type': 'order_status_update',
             'order_id': order_id,
+            'orderId': order_id,
             'status': 'out_for_delivery',
-            'driver_id': driver_id,
-            'timestamp': datetime.utcnow().isoformat()
+            'data': {
+                'client_user_id': client_user_id,
+                'driver_id': driver_id,
+                'timestamp': datetime.utcnow().isoformat()
+            }
         })
-        
+
         return True
         
     except Exception as e:
