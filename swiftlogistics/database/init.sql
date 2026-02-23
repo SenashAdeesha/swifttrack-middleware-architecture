@@ -96,7 +96,7 @@ CREATE TABLE order_timeline (
 -- ============================================================================
 CREATE TABLE warehouse_inventory (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    order_id VARCHAR(50) REFERENCES orders(id),
+    order_id VARCHAR(50) REFERENCES orders(id) UNIQUE,
     location_code VARCHAR(50),
     shelf_number VARCHAR(50),
     received_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
