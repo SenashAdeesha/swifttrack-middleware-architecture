@@ -548,6 +548,38 @@ def mark_order_failed(order_id):
         logger.error("Failed to mark order as failed", error=str(e), order_id=order_id)
         return jsonify({'error': 'Service temporarily unavailable'}), 503
 
+@app.route('/api/orders/<order_id>/status', methods=['PUT'])
+@optional_token
+def update_order_status(order_id):
+    """Update order status only — used by driver Delivery page and admin dashboard."""
+    try:
+        response = requests.put(
+            f"{MIDDLEWARE_SERVICE_URL}/orders/{order_id}/status",
+            json=request.get_json() or {},
+            headers={'X-User-Context': json.dumps(g.current_user)} if g.current_user else {},
+            timeout=10
+        )
+        return jsonify(response.json()), response.status_code
+    except requests.RequestException as e:
+        logger.error("Failed to update order status", error=str(e), order_id=order_id)
+        return jsonify({'error': 'Service temporarily unavailable'}), 503
+
+@app.route('/api/orders/<order_id>/assign', methods=['POST'])
+@optional_token
+def assign_driver_to_order(order_id):
+    """Assign a driver to an order."""
+    try:
+        response = requests.post(
+            f"{MIDDLEWARE_SERVICE_URL}/orders/{order_id}/assign",
+            json=request.get_json() or {},
+            headers={'X-User-Context': json.dumps(g.current_user)} if g.current_user else {},
+            timeout=10
+        )
+        return jsonify(response.json()), response.status_code
+    except requests.RequestException as e:
+        logger.error("Failed to assign driver to order", error=str(e), order_id=order_id)
+        return jsonify({'error': 'Service temporarily unavailable'}), 503
+
 # =============================================================================
 # DRIVER ENDPOINTS
 # =============================================================================
