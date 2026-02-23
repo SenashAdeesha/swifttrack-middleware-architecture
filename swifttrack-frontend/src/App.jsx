@@ -28,6 +28,7 @@ import AdminUsers from './pages/admin/Users';
 import AdminOrders from './pages/admin/Orders';
 import AdminLogs from './pages/admin/Logs';
 import AdminAnalytics from './pages/admin/Analytics';
+import AdminTracking from './pages/admin/Tracking';
 
 // Layout Components
 import ClientLayout from './components/layout/ClientLayout';
@@ -86,6 +87,8 @@ function App() {
                   <Route path="dashboard" element={<AdminDashboard />} />
                   <Route path="users" element={<AdminUsers />} />
                   <Route path="orders" element={<AdminOrders />} />
+                  <Route path="tracking/:orderId" element={<AdminTracking />} />
+                  <Route path="tracking" element={<AdminTracking />} />
                   <Route path="logs" element={<AdminLogs />} />
                   <Route path="analytics" element={<AdminAnalytics />} />
                 </Route>

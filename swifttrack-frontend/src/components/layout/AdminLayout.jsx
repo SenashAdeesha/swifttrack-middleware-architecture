@@ -6,17 +6,19 @@ import {
   Package, 
   FileText,
   BarChart3,
-  Shield
+  Shield,
+  Navigation,
 } from 'lucide-react';
 import Sidebar from './Sidebar';
 import Header from './Header';
 
 const adminNavItems = [
-  { path: '/admin/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { path: '/admin/users', label: 'User Management', icon: Users },
-  { path: '/admin/orders', label: 'Order Monitoring', icon: Package },
-  { path: '/admin/logs', label: 'System Logs', icon: FileText },
-  { path: '/admin/analytics', label: 'Analytics', icon: BarChart3 },
+  { path: '/admin/dashboard', label: 'Dashboard',       icon: LayoutDashboard },
+  { path: '/admin/users',     label: 'User Management', icon: Users           },
+  { path: '/admin/orders',    label: 'Order Monitoring', icon: Package         },
+  { path: '/admin/tracking',  label: 'Order Tracking',  icon: Navigation      },
+  { path: '/admin/logs',      label: 'System Logs',      icon: FileText        },
+  { path: '/admin/analytics', label: 'Analytics',        icon: BarChart3       },
 ];
 
 const AdminLayout = () => {
