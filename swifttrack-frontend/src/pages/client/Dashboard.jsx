@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Package, Truck, Check, Clock, TrendingUp, Plus, Eye, ArrowRight,
@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { Card, CardHeader, CardTitle, Badge, Button, StatCard, TableSkeleton, EmptyState } from '../../components/common';
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
-import { ordersAPI, clientAPI } from '../../services/api';
+import { ordersAPI, clientAPI, wsService } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import toast from 'react-hot-toast';
 
@@ -17,10 +17,14 @@ const Dashboard = () => {
   const [orders, setOrders] = useState([]);
   const [chartPeriod, setChartPeriod] = useState('week');
   const [refreshing, setRefreshing] = useState(false);
+  // Track recently-changed order IDs for the flash animation
+  const [flashIds, setFlashIds] = useState(new Set());
+  const flashTimers = useRef({});
+  // Middleware pipeline stage per order: { orderId: 'ready'|'loaded'|'dispatched' }
+  const [middlewareStages, setMiddlewareStages] = useState({});
 
-  useEffect(() => { fetchDashboardData(); }, [user?.id]);
-
-  const fetchDashboardData = async (silent = false) => {
+  // Fetch dashboard data
+  const fetchDashboardData = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     else setRefreshing(true);
     try {
@@ -36,12 +40,97 @@ const Dashboard = () => {
       setLoading(false);
       setRefreshing(false);
     }
-  };
+  }, [user?.id]);
 
-  const handleRefresh = () => {
+  useEffect(() => { fetchDashboardData(); }, [fetchDashboardData]);
+
+  // Flash a badge for 3 seconds when status changes
+  const triggerFlash = useCallback((id) => {
+    const sid = String(id);
+    setFlashIds(prev => new Set(prev).add(sid));
+    clearTimeout(flashTimers.current[sid]);
+    flashTimers.current[sid] = setTimeout(() => {
+      setFlashIds(prev => { const n = new Set(prev); n.delete(sid); return n; });
+    }, 3000);
+  }, []);
+
+  // WS: order status changed
+  const handleStatusUpdate = useCallback((data) => {
+    const id     = String(data.orderId || data.order_id);
+    const status = data.status;
+    if (!status || !id) return;
+    // While middleware pipeline is running, keep badge as "Pending"
+    // — pipeline dots (Ready/Loaded/Dispatched/Pending) show the progress
+    if (['confirmed', 'in_warehouse'].includes(status)) return;
+
+    setOrders(prev => {
+      const found = prev.some(o => String(o.id) === id);
+      if (!found) {
+        // Order not yet in state (created after last fetch) — refresh
+        setTimeout(() => fetchDashboardData(true), 200);
+        return prev;
+      }
+      return prev.map(o => String(o.id) === id ? { ...o, status } : o);
+    });
+
+    triggerFlash(id);
+    const labels = {
+      confirmed:        'Confirmed',
+      in_warehouse:     'In Warehouse',
+      out_for_delivery: 'Out for Delivery',
+      delivered:        'Delivered ✅',
+      failed:           'Delivery Failed',
+      cancelled:        'Cancelled',
+    };
+    if (labels[status]) toast.success(`Order #${id}: ${labels[status]}`, { duration: 3000 });
+    // Silently refresh to fetch driver name when dispatched out for delivery
+    if (status === 'out_for_delivery') setTimeout(() => fetchDashboardData(true), 500);
+    // Clear middleware pipeline once order moves past warehouse stages
+    if (['out_for_delivery', 'delivered', 'failed', 'cancelled'].includes(status)) {
+      setMiddlewareStages(prev => { const n = { ...prev }; delete n[id]; return n; });
+    }
+  }, [triggerFlash, fetchDashboardData]);
+
+  // WS: delivery completed
+  const handleDeliveryCompleted = useCallback((data) => {
+    const id = String(data.orderId || data.order_id);
+    setOrders(prev => prev.map(o => String(o.id) === id ? { ...o, status: 'delivered' } : o));
+    triggerFlash(id);
+    toast.success(`🎉 Order #${id} delivered!`, { duration: 4000 });
+    setTimeout(() => fetchDashboardData(true), 1000);
+  }, [triggerFlash, fetchDashboardData]);
+
+  // WS: new order added
+  const handleNewOrder = useCallback(() => {
     fetchDashboardData(true);
-    toast.success('Dashboard refreshed');
-  };
+  }, [fetchDashboardData]);
+
+  // WS: middleware pipeline stage updated (ready → loaded → dispatched)
+  const handleMiddlewareUpdate = useCallback((data) => {
+    const id    = String(data.orderId || data.order_id);
+    const stage = data.stage;
+    if (!stage) return;
+    setMiddlewareStages(prev => ({ ...prev, [id]: stage }));
+    triggerFlash(id);
+  }, [triggerFlash]);
+
+  // WS: driver assigned — toast + refresh to get driver name
+  const handleDriverAssigned = useCallback((data) => {
+    const id = String(data.orderId || data.order_id);
+    toast.success(`Driver assigned to Order #${id}`, { icon: '🚚', duration: 3000 });
+    setTimeout(() => fetchDashboardData(true), 500);
+  }, [fetchDashboardData]);
+
+  // Connect WebSocket and register listeners
+  useEffect(() => {
+    wsService.connect();
+    const u1 = wsService.on('order_status_update', handleStatusUpdate);
+    const u2 = wsService.on('delivery_completed',  handleDeliveryCompleted);
+    const u3 = wsService.on('new_order',           handleNewOrder);
+    const u4 = wsService.on('middleware_update',   handleMiddlewareUpdate);
+    const u5 = wsService.on('driver_assigned',     handleDriverAssigned);
+    return () => { u1(); u2(); u3(); u4(); u5(); };
+  }, [handleStatusUpdate, handleDeliveryCompleted, handleNewOrder, handleMiddlewareUpdate, handleDriverAssigned]);
 
   const statCards = [
     { title: 'Total Orders', value: stats.totalOrders || 0, icon: Package, trend: '+12%', trendUp: true, color: 'primary' },
@@ -68,12 +157,18 @@ const Dashboard = () => {
 
   const activeDeliveries = orders.filter(o => ['out_for_delivery', 'in_warehouse'].includes(o.status)).slice(0, 3);
 
+  const handleRefresh = () => { fetchDashboardData(true); toast.success('Dashboard refreshed'); };
+
   const getStatusColor = (status) => {
-    const colors = { pending: 'warning', in_warehouse: 'info', out_for_delivery: 'primary', delivered: 'success', failed: 'danger' };
+    const colors = { pending: 'warning', confirmed: 'warning', in_warehouse: 'warning', out_for_delivery: 'primary', delivered: 'success', failed: 'danger', cancelled: 'secondary' };
     return colors[status] || 'gray';
   };
 
-  const getStatusLabel = (status) => status?.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  const getStatusLabel = (status) => {
+    const labels = { confirmed: 'Pending', in_warehouse: 'Pending' };
+    if (labels[status]) return labels[status];
+    return status?.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  };
 
   return (
     <div className="space-y-6">
@@ -229,9 +324,49 @@ const Dashboard = () => {
                     <tr key={order.id} className="hover:bg-gray-50 dark:hover:bg-slate-700/30 transition">
                       <td className="py-3 px-4">
                         <p className="font-medium text-primary-600">{order.id}</p>
-                        <p className="text-xs text-gray-400 truncate max-w-[150px]">{order.deliveryAddress}</p>
+                        <p className="text-xs text-gray-400 truncate max-w-37.5">{order.deliveryAddress}</p>
                       </td>
-                      <td className="py-3 px-4"><Badge variant={getStatusColor(order.status)} size="sm">{getStatusLabel(order.status)}</Badge></td>
+                      <td className="py-3 px-4">
+                        <span className={`inline-block transition-all duration-300 ${
+                          flashIds.has(String(order.id))
+                            ? 'scale-110 ring-2 ring-offset-1 ring-primary-400 rounded-full'
+                            : ''
+                        }`}>
+                          <Badge variant={getStatusColor(order.status)} size="sm">{getStatusLabel(order.status)}</Badge>
+                        </span>
+                        {flashIds.has(String(order.id)) && (
+                          <span className="ml-1.5 inline-block w-2 h-2 rounded-full bg-green-400 animate-ping"/>
+                        )}
+                        {/* Middleware pipeline: ready → loaded → dispatched */}
+                        {middlewareStages[String(order.id)] && (() => {
+                          const STAGES = [
+                            { key: 'ready',      label: 'Ready'      },
+                            { key: 'loaded',     label: 'Loaded'     },
+                            { key: 'dispatched', label: 'Dispatched' },
+                            { key: 'pending',    label: 'Pending'    },
+                          ];
+                          const currentIdx = STAGES.findIndex(s => s.key === middlewareStages[String(order.id)]);
+                          return (
+                            <div className="flex items-center gap-0.5 mt-1.5">
+                              {STAGES.map((s, i) => (
+                                <div key={s.key} className="flex items-center gap-0.5">
+                                  <div className={`w-1.5 h-1.5 rounded-full ${
+                                    i <= currentIdx ? 'bg-primary-500' : 'bg-gray-300 dark:bg-slate-600'
+                                  }`} />
+                                  <span className={`text-[9px] font-medium ${
+                                    i <= currentIdx ? 'text-primary-600 dark:text-primary-400' : 'text-gray-400'
+                                  }`}>{s.label}</span>
+                                  {i < STAGES.length - 1 && (
+                                    <div className={`w-3 h-px ml-0.5 ${
+                                      i < currentIdx ? 'bg-primary-400' : 'bg-gray-200 dark:bg-slate-700'
+                                    }`} />
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          );
+                        })()}
+                      </td>
                       <td className="py-3 px-4 text-sm text-gray-500">{new Date(order.createdAt).toLocaleDateString()}</td>
                       <td className="py-3 px-4 text-right">
                         <Link to={`/client/tracking/${order.id}`} className="p-2 text-gray-400 hover:text-primary-600 hover:bg-primary-50 dark:hover:bg-primary-900/20 rounded-lg inline-flex"><Eye className="w-4 h-4" /></Link>
