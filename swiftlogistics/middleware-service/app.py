@@ -261,8 +261,15 @@ def get_orders():
         
         status = request.args.get('status')
         if status:
-            query += " AND o.status = %s"
-            params.append(status)
+            # Support comma-separated status values (e.g. "confirmed,in_warehouse")
+            status_list = [s.strip() for s in status.split(',') if s.strip()]
+            if len(status_list) == 1:
+                query += " AND o.status = %s"
+                params.append(status_list[0])
+            else:
+                placeholders = ','.join(['%s'] * len(status_list))
+                query += f" AND o.status IN ({placeholders})"
+                params.extend(status_list)
         
         client_id = request.args.get('clientId')
         if client_id:
@@ -413,7 +420,7 @@ def create_order():
         
         if not client_id:
             # Use default client for demo
-            client_id = 'c1111111-1111-1111-1111-111111111111'
+            client_id = 1
         
         # Calculate estimated delivery based on priority
         priority = data.get('priority', 'normal')
@@ -453,14 +460,15 @@ def create_order():
         
         conn.commit()
         
-        # Get client name
+        # Get client name and user_id
         cursor.execute("""
-            SELECT u.name FROM clients c 
+            SELECT u.id as user_id, u.name FROM clients c 
             JOIN users u ON c.user_id = u.id 
             WHERE c.id = %s
         """, (client_id,))
         client = cursor.fetchone()
         client_name = client['name'] if client else 'Unknown'
+        client_user_id = str(client['user_id']) if client else None
         
         conn.close()
         
@@ -501,10 +509,11 @@ def create_order():
         # =====================================================================
         # SEND NOTIFICATION
         # =====================================================================
-        publish_message('swifttrack.notifications', '', {
+        publish_message('swifttrack.notifications', 'realtime.new_order', {
             'type': 'order_created',
             'order_id': order_id,
             'client_id': client_id,
+            'client_user_id': client_user_id,
             'message': f'Order {order_id} has been created successfully'
         })
         
@@ -583,16 +592,29 @@ def update_order(order_id):
                 "INSERT INTO order_timeline (order_id, status, description) VALUES (%s, %s, %s)",
                 (order_id, data['status'], f"Status changed to {data['status']}")
             )
-            
-            # Publish status change event
-            publish_message('swifttrack.orders', f'order.status.{data["status"]}', {
-                'order_id': order_id,
-                'new_status': data['status'],
-                'timestamp': datetime.utcnow().isoformat()
-            })
+        
+        # Fetch client user_id for realtime notification
+        client_user_id = None
+        if order.get('client_id'):
+            cursor.execute("SELECT user_id FROM clients WHERE id = %s", (order['client_id'],))
+            client_record = cursor.fetchone()
+            client_user_id = str(client_record['user_id']) if client_record else None
         
         conn.commit()
         conn.close()
+        
+        # Publish realtime status update when status changes
+        if 'status' in data:
+            publish_message('swifttrack.notifications', 'realtime.update', {
+                'type': 'order_status_update',
+                'order_id': order_id,
+                'status': data['status'],
+                'data': {
+                    'client_user_id': client_user_id,
+                    'driver_id': str(order['driver_id']) if order.get('driver_id') else None,
+                    'timestamp': datetime.utcnow().isoformat()
+                }
+            })
         
         order_response = serialize_record(order)
         order_response['pickupAddress'] = order['pickup_address']
@@ -628,6 +650,11 @@ def cancel_order(order_id):
             (order_id,)
         )
         
+        # Fetch client user_id for realtime notification
+        cursor.execute("SELECT user_id FROM clients WHERE id = %s", (order['client_id'],))
+        client_record = cursor.fetchone()
+        client_user_id = str(client_record['user_id']) if client_record else None
+        
         conn.commit()
         conn.close()
         
@@ -647,11 +674,24 @@ def cancel_order(order_id):
             'timestamp': datetime.utcnow().isoformat()
         })
         
-        # Send cancellation notification
-        publish_message('swifttrack.notifications', '', {
-            'type': 'order_cancelled',
+        # Realtime update — broadcast to WebSocket clients via realtime.# binding
+        publish_message('swifttrack.notifications', 'realtime.update', {
+            'type': 'order_status_update',
             'order_id': order_id,
-            'message': f'Order {order_id} has been cancelled'
+            'status': 'cancelled',
+            'data': {
+                'client_user_id': client_user_id,
+                'driver_id': str(order['driver_id']) if order.get('driver_id') else None
+            }
+        })
+        
+        # User notification
+        publish_message('swifttrack.notifications', 'realtime.notification', {
+            'type': 'notification',
+            'user_id': client_user_id,
+            'title': 'Order Cancelled',
+            'message': f'Your order {order_id} has been cancelled',
+            'notification_type': 'info'
         })
         
         return jsonify({'data': serialize_record(order)}), 200
@@ -659,6 +699,73 @@ def cancel_order(order_id):
     except Exception as e:
         logger.error("Failed to cancel order", error=str(e), order_id=order_id)
         return jsonify({'error': 'Failed to cancel order'}), 500
+
+@app.route('/orders/<order_id>/status', methods=['PUT'])
+def update_order_status(order_id):
+    """
+    =========================================================================
+    UPDATE ORDER STATUS
+    =========================================================================
+    Dedicated endpoint for status-only updates.
+    Called by admin dashboard and driver actions.
+    Publishes realtime update to all relevant WebSocket rooms.
+    =========================================================================
+    """
+    try:
+        data = request.get_json() or {}
+        new_status = data.get('status')
+        
+        if not new_status:
+            return jsonify({'error': 'Status is required'}), 400
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            UPDATE orders SET status = %s, updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+            RETURNING *
+        """, (new_status, order_id))
+        
+        order = cursor.fetchone()
+        
+        if not order:
+            conn.close()
+            return jsonify({'error': 'Order not found'}), 404
+        
+        cursor.execute(
+            "INSERT INTO order_timeline (order_id, status, description) VALUES (%s, %s, %s)",
+            (order_id, new_status, f"Status updated to {new_status}")
+        )
+        
+        # Fetch client user_id for realtime notification
+        client_user_id = None
+        if order.get('client_id'):
+            cursor.execute("SELECT user_id FROM clients WHERE id = %s", (order['client_id'],))
+            client_record = cursor.fetchone()
+            client_user_id = str(client_record['user_id']) if client_record else None
+        
+        conn.commit()
+        conn.close()
+        
+        # Publish realtime update — broadcast to WebSocket clients via realtime.# binding
+        publish_message('swifttrack.notifications', 'realtime.update', {
+            'type': 'order_status_update',
+            'order_id': order_id,
+            'status': new_status,
+            'data': {
+                'client_user_id': client_user_id,
+                'driver_id': str(order['driver_id']) if order.get('driver_id') else None,
+                'timestamp': datetime.utcnow().isoformat()
+            }
+        })
+        
+        logger.info("Order status updated", order_id=order_id, status=new_status)
+        return jsonify({'data': serialize_record(order)}), 200
+        
+    except Exception as e:
+        logger.error("Failed to update order status", error=str(e), order_id=order_id)
+        return jsonify({'error': 'Failed to update order status'}), 500
 
 @app.route('/orders/<order_id>/delivered', methods=['POST'])
 def mark_delivered(order_id):
@@ -697,21 +804,44 @@ def mark_delivered(order_id):
                 WHERE id = %s
             """, (order['driver_id'],))
         
+        # Get client user_id for real-time WebSocket notification
+        cursor.execute("SELECT user_id FROM clients WHERE id = %s", (order['client_id'],))
+        client_record = cursor.fetchone()
+        client_user_id = str(client_record['user_id']) if client_record else None
+        
         conn.commit()
         conn.close()
         
-        # Publish delivery event
-        publish_message('swifttrack.orders', 'order.status.delivered', {
+        delivered_at = datetime.utcnow().isoformat()
+        
+        # Publish order status update — consumed by websocket-service via realtime.# binding
+        publish_message('swifttrack.notifications', 'realtime.update', {
+            'type': 'order_status_update',
             'order_id': order_id,
-            'delivered_at': datetime.utcnow().isoformat()
+            'status': 'delivered',
+            'data': {
+                'client_user_id': client_user_id,
+                'driver_id': str(order['driver_id']) if order['driver_id'] else None,
+                'delivered_at': delivered_at
+            }
         })
         
-        # Send notification
-        publish_message('swifttrack.notifications', '', {
-            'type': 'order_delivered',
+        # Publish delivery_completed event for Tracking page
+        publish_message('swifttrack.notifications', 'realtime.delivery', {
+            'type': 'delivery_completed',
             'order_id': order_id,
-            'client_id': str(order['client_id']),
-            'message': f'Order {order_id} has been delivered'
+            'delivered_at': delivered_at,
+            'client_user_id': client_user_id,
+            'driver_id': str(order['driver_id']) if order['driver_id'] else None
+        })
+        
+        # User notification
+        publish_message('swifttrack.notifications', 'realtime.notification', {
+            'type': 'notification',
+            'user_id': client_user_id,
+            'title': 'Package Delivered!',
+            'message': f'Your order {order_id} has been delivered successfully',
+            'notification_type': 'success'
         })
         
         order_response = serialize_record(order)
@@ -752,22 +882,34 @@ def mark_failed(order_id):
             (order_id, f"Delivery failed - {data.get('reason', 'Unknown reason')}")
         )
         
+        # Get client user_id for real-time WebSocket notification
+        cursor.execute("SELECT user_id FROM clients WHERE id = %s", (order['client_id'],))
+        client_record = cursor.fetchone()
+        client_user_id = str(client_record['user_id']) if client_record else None
+        
         conn.commit()
         conn.close()
         
-        # Publish failure event
-        publish_message('swifttrack.orders', 'order.status.failed', {
+        # Publish order status update — consumed by websocket-service via realtime.# binding
+        publish_message('swifttrack.notifications', 'realtime.update', {
+            'type': 'order_status_update',
             'order_id': order_id,
-            'reason': data.get('reason', ''),
-            'timestamp': datetime.utcnow().isoformat()
+            'status': 'failed',
+            'data': {
+                'client_user_id': client_user_id,
+                'driver_id': str(order['driver_id']) if order['driver_id'] else None,
+                'failure_reason': data.get('reason', ''),
+                'timestamp': datetime.utcnow().isoformat()
+            }
         })
         
-        # Send notification
-        publish_message('swifttrack.notifications', '', {
-            'type': 'order_failed',
-            'order_id': order_id,
-            'reason': data.get('reason', ''),
-            'message': f'Order {order_id} delivery failed'
+        # User notification
+        publish_message('swifttrack.notifications', 'realtime.notification', {
+            'type': 'notification',
+            'user_id': client_user_id,
+            'title': 'Delivery Attempt Failed',
+            'message': f'Your order {order_id} delivery failed: {data.get("reason", "Unknown reason")}',
+            'notification_type': 'error'
         })
         
         order_response = serialize_record(order)
@@ -779,6 +921,110 @@ def mark_failed(order_id):
     except Exception as e:
         logger.error("Failed to mark order as failed", error=str(e), order_id=order_id)
         return jsonify({'error': 'Failed to mark order as failed'}), 500
+
+@app.route('/orders/<order_id>/assign', methods=['POST'])
+def assign_driver_to_order(order_id):
+    """
+    =========================================================================
+    ASSIGN DRIVER TO ORDER
+    =========================================================================
+    Assigns a driver to an order and sets status to out_for_delivery.
+    Notifies the driver via WebSocket and publishes realtime update.
+    =========================================================================
+    """
+    try:
+        data = request.get_json() or {}
+        driver_id = data.get('driverId')
+        
+        if not driver_id:
+            return jsonify({'error': 'driverId is required'}), 400
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Resolve driver record
+        cursor.execute("""
+            SELECT d.id, u.name, u.phone, d.vehicle_type, d.vehicle_plate
+            FROM drivers d JOIN users u ON d.user_id = u.id
+            WHERE d.id::text = %s OR d.user_id::text = %s
+        """, (driver_id, driver_id))
+        driver = cursor.fetchone()
+        
+        if not driver:
+            conn.close()
+            return jsonify({'error': 'Driver not found'}), 404
+        
+        cursor.execute("""
+            UPDATE orders
+            SET driver_id = %s,
+                status = 'out_for_delivery',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+            RETURNING *
+        """, (driver['id'], order_id))
+        
+        order = cursor.fetchone()
+        
+        if not order:
+            conn.close()
+            return jsonify({'error': 'Order not found'}), 404
+        
+        cursor.execute(
+            "INSERT INTO order_timeline (order_id, status, description) VALUES (%s, 'out_for_delivery', %s)",
+            (order_id, f"Driver {driver['name']} assigned")
+        )
+        
+        # Get client user_id
+        client_user_id = None
+        if order.get('client_id'):
+            cursor.execute("SELECT user_id FROM clients WHERE id = %s", (order['client_id'],))
+            client_record = cursor.fetchone()
+            client_user_id = str(client_record['user_id']) if client_record else None
+        
+        # Mark driver as busy
+        cursor.execute("""
+            UPDATE drivers SET status = 'busy', updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+        """, (driver['id'],))
+        
+        conn.commit()
+        conn.close()
+        
+        # Notify driver of new assignment
+        publish_message('swifttrack.notifications', 'realtime.assigned', {
+            'type': 'driver_assigned',
+            'order_id': order_id,
+            'driver_id': str(driver['id']),
+            'pickup_address': order.get('pickup_address', ''),
+            'delivery_address': order.get('delivery_address', ''),
+            'driver_name': driver['name'],
+            'driver_phone': driver['phone'],
+            'vehicle_type': driver.get('vehicle_type', ''),
+            'vehicle_plate': driver.get('vehicle_plate', '')
+        })
+        
+        # Realtime status update to client and admins
+        publish_message('swifttrack.notifications', 'realtime.update', {
+            'type': 'order_status_update',
+            'order_id': order_id,
+            'status': 'out_for_delivery',
+            'data': {
+                'client_user_id': client_user_id,
+                'driver_id': str(driver['id']),
+                'driver_name': driver['name']
+            }
+        })
+        
+        order_response = serialize_record(order)
+        order_response['driverName'] = driver['name']
+        order_response['driverId'] = str(driver['id'])
+        
+        logger.info("Driver assigned to order", order_id=order_id, driver_id=str(driver['id']))
+        return jsonify({'data': order_response}), 200
+        
+    except Exception as e:
+        logger.error("Failed to assign driver", error=str(e), order_id=order_id)
+        return jsonify({'error': 'Failed to assign driver'}), 500
 
 # =============================================================================
 # DRIVER ENDPOINTS
@@ -846,14 +1092,14 @@ def get_driver_route(driver_id):
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Get orders assigned to driver
+        # Get orders assigned to driver (include confirmed, in_warehouse, out_for_delivery)
         cursor.execute("""
             SELECT o.*, u.name as customer_name
             FROM orders o
             LEFT JOIN clients c ON o.client_id = c.id
             LEFT JOIN users u ON c.user_id = u.id
             WHERE o.driver_id = (SELECT id FROM drivers WHERE user_id::text = %s OR id::text = %s)
-            AND o.status IN ('in_warehouse', 'out_for_delivery')
+            AND o.status IN ('confirmed', 'in_warehouse', 'out_for_delivery', 'picked_up')
             ORDER BY o.priority DESC, o.created_at ASC
         """, (driver_id, driver_id))
         
