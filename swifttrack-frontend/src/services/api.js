@@ -5,7 +5,7 @@ import { io } from 'socket.io-client';
 // API Configuration
 // =============================================================================
 const API_BASE_URL = 'http://localhost:5002/api';
-const WEBSOCKET_URL = 'http://localhost:5005';
+const WEBSOCKET_URL = 'http://localhost:5006';
 
 // Create axios instance
 const api = axios.create({
@@ -62,9 +62,9 @@ class WebSocketService {
       console.log('🔌 WebSocket connected');
       this.reconnectAttempts = 0;
       // Automatically authenticate if user is logged in
-      const user = JSON.parse(localStorage.getItem('swifttrack_user') || '{}');
-      if (user.id && user.role) {
-        this.authenticate(user.id, user.role);
+      const token = localStorage.getItem('swifttrack_token');
+      if (token) {
+        this.authenticate(token);
       }
     });
 
@@ -77,8 +77,9 @@ class WebSocketService {
     });
 
     // Set up event forwarding
-    ['order_status_update', 'driver_location', 'new_order', 'driver_assigned', 
-     'new_assignment', 'delivery_completed', 'notification', 'proof_uploaded'].forEach(event => {
+    ['order_status_update', 'driver_location', 'new_order', 'driver_assigned',
+     'new_assignment', 'delivery_completed', 'notification', 'proof_uploaded',
+     'middleware_update'].forEach(event => {
       this.socket.on(event, (data) => {
         this.emit(event, data);
       });
@@ -87,9 +88,9 @@ class WebSocketService {
     return this;
   }
 
-  authenticate(userId, role) {
+  authenticate(token) {
     if (this.socket?.connected) {
-      this.socket.emit('authenticate', { userId, role });
+      this.socket.emit('authenticate', { token });
     }
   }
 
@@ -283,7 +284,8 @@ export const driverAPI = {
   },
 
   getAssignments: async (driverId) => {
-    const response = await api.get('/orders', { params: { driverId, status: 'in_warehouse,out_for_delivery' } });
+    // Include all statuses so completed/failed orders appear in the route list
+    const response = await api.get('/orders', { params: { driverId, status: 'confirmed,picked_up,in_warehouse,out_for_delivery,delivered,failed' } });
     return { data: response.data.data || response.data.orders || [] };
   },
 };
