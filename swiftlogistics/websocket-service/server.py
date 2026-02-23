@@ -132,6 +132,8 @@ def rabbitmq_consumer():
                         handle_delivery_completed(message)
                     elif event_type == 'notification':
                         handle_notification(message)
+                    elif event_type == 'middleware_update':
+                        handle_middleware_update(message)
                     
                     ch.basic_ack(delivery_tag=method.delivery_tag)
                 except Exception as e:
@@ -153,31 +155,28 @@ def handle_order_status_update(message):
     new_status = message.get('status')
     data = message.get('data', {})
     
-    # Emit to order-specific room
-    socketio.emit('order_status_update', {
+    payload = {
         'orderId': order_id,
         'status': new_status,
         'timestamp': datetime.utcnow().isoformat(),
         **data
-    }, room=f'order_{order_id}')
+    }
+    
+    # Emit to order-specific room (clients subscribed to this order)
+    socketio.emit('order_status_update', payload, room=f'order_{order_id}')
     
     # Emit to all admins
-    socketio.emit('order_status_update', {
-        'orderId': order_id,
-        'status': new_status,
-        'timestamp': datetime.utcnow().isoformat(),
-        **data
-    }, room='admins')
+    socketio.emit('order_status_update', payload, room='admins')
     
     # Emit to assigned driver if exists
     driver_id = data.get('driver_id')
     if driver_id:
-        socketio.emit('order_status_update', {
-            'orderId': order_id,
-            'status': new_status,
-            'timestamp': datetime.utcnow().isoformat(),
-            **data
-        }, room=f'driver_{driver_id}')
+        socketio.emit('order_status_update', payload, room=f'driver_{driver_id}')
+    
+    # Emit to client's user room so Orders page receives update without subscribing to order room
+    client_user_id = data.get('client_user_id')
+    if client_user_id:
+        socketio.emit('order_status_update', payload, room=f'user_{client_user_id}')
     
     logger.info(f"Order {order_id} status updated to {new_status}")
 
@@ -243,15 +242,24 @@ def handle_driver_assigned(message):
 def handle_delivery_completed(message):
     """Notify about delivery completion."""
     order_id = message.get('order_id')
+    client_user_id = message.get('client_user_id')
     
-    socketio.emit('delivery_completed', {
+    payload = {
         'orderId': order_id,
         'deliveredAt': message.get('delivered_at'),
         'proofUrl': message.get('proof_url'),
         'signature': message.get('signature'),
         'timestamp': datetime.utcnow().isoformat()
-    }, room=f'order_{order_id}')
+    }
     
+    # Emit to order-specific room (Tracking page)
+    socketio.emit('delivery_completed', payload, room=f'order_{order_id}')
+    
+    # Emit to client's user room (Orders page)
+    if client_user_id:
+        socketio.emit('delivery_completed', payload, room=f'user_{client_user_id}')
+    
+    # Emit to admins
     socketio.emit('delivery_completed', {
         'orderId': order_id,
         'deliveredAt': message.get('delivered_at'),
@@ -269,6 +277,31 @@ def handle_notification(message):
         'type': message.get('notification_type', 'info'),
         'timestamp': datetime.utcnow().isoformat()
     }, room=f'user_{user_id}')
+
+def handle_middleware_update(message):
+    """Broadcast middleware pipeline stage update (ready / loaded / dispatched)."""
+    order_id = message.get('order_id')
+    stage = message.get('stage')
+    data = message.get('data', {})
+    client_user_id = data.get('client_user_id')
+
+    payload = {
+        'orderId': order_id,
+        'stage': stage,
+        'label': data.get('label', stage),
+        'warehouseLocation': data.get('warehouse_location'),
+        'timestamp': datetime.utcnow().isoformat()
+    }
+
+    # Emit to order-specific room (Tracking page)
+    socketio.emit('middleware_update', payload, room=f'order_{order_id}')
+    # Emit to all admins
+    socketio.emit('middleware_update', payload, room='admins')
+    # Emit to client’s user room (Dashboard / Orders page)
+    if client_user_id:
+        socketio.emit('middleware_update', payload, room=f'user_{client_user_id}')
+
+    logger.info(f"Middleware stage update for order {order_id}: {stage}")
 
 # =============================================================================
 # SOCKET.IO EVENT HANDLERS

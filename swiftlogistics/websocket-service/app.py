@@ -388,43 +388,64 @@ def send_pending_notifications(user_id):
 
 # ============ Broadcast Functions (called by RabbitMQ consumer) ============
 
-def broadcast_order_status_update(order_id, status, data=None):
+def broadcast_order_status_update(order_id, status, client_user_id=None, data=None):
     """Broadcast order status update to relevant clients"""
     event_data = {
-        'event': 'order_status_update',
+        'orderId': order_id,
         'order_id': order_id,
         'status': status,
-        'data': data or {},
         'timestamp': datetime.utcnow().isoformat()
     }
-    
-    # Emit to order room (clients and drivers subscribed to this order)
-    socketio.emit('order_update', event_data, room=f'order_{order_id}')
-    
+
+    # Emit to order room (Tracking page subscribers)
+    socketio.emit('order_status_update', event_data, room=f'order_{order_id}')
     # Emit to admin room
-    socketio.emit('order_update', event_data, room='admin_room')
-    
+    socketio.emit('order_status_update', event_data, room='admin_room')
+    # Emit directly to client's user room (Dashboard / Orders page)
+    if client_user_id:
+        socketio.emit('order_status_update', event_data, room=f'user_{client_user_id}')
+
     print(f"Broadcasted order status update: {order_id} -> {status}")
 
 
-def broadcast_order_created(order_id, client_id, data=None):
-    """Broadcast new order created"""
+def broadcast_middleware_update(order_id, stage, client_user_id=None, label=None, warehouse_location=None):
+    """Broadcast WMS middleware pipeline stage: ready -> loaded -> dispatched"""
     event_data = {
-        'event': 'order_created',
+        'orderId': order_id,
         'order_id': order_id,
-        'client_id': client_id,
-        'data': data or {},
+        'stage': stage,
+        'label': label or stage,
+        'warehouseLocation': warehouse_location,
         'timestamp': datetime.utcnow().isoformat()
     }
-    
+
+    socketio.emit('middleware_update', event_data, room=f'order_{order_id}')
+    socketio.emit('middleware_update', event_data, room='admin_room')
+    if client_user_id:
+        socketio.emit('middleware_update', event_data, room=f'user_{client_user_id}')
+
+    print(f"Broadcasted middleware stage: order {order_id} -> {stage}")
+
+
+def broadcast_order_created(order_id, client_id, client_user_id=None, data=None):
+    """Broadcast new order created to admins and the creating client."""
+    event_data = {
+        'orderId': order_id,
+        'order_id': order_id,
+        'clientId': client_id,
+        'timestamp': datetime.utcnow().isoformat()
+    }
+
     # Emit to admin room
     socketio.emit('new_order', event_data, room='admin_room')
-    
-    # Emit to client
-    if client_id in user_connections:
-        for sid in user_connections[client_id]:
-            socketio.emit('order_created', event_data, room=sid)
-    
+
+    # Emit to the client's user room so Dashboard refreshes
+    if client_user_id:
+        socketio.emit('new_order', event_data, room=f'user_{client_user_id}')
+    elif client_id in user_connections:
+        for sid in user_connections[str(client_id)]:
+            socketio.emit('new_order', event_data, room=sid)
+
     print(f"Broadcasted new order: {order_id}")
 
 
@@ -489,61 +510,75 @@ def broadcast_notification(user_id, notification_data):
 # ============ RabbitMQ Consumer ============
 
 def process_rabbitmq_message(ch, method, properties, body):
-    """Process incoming RabbitMQ messages"""
+    """Process incoming RabbitMQ messages.
+
+    Supports two message formats:
+    1. Legacy:  {"event": "...", "data": {...}}
+    2. WMS/new: {"type": "...", "order_id": ..., "status": ..., "data": {...}}
+    """
     try:
         message = json.loads(body)
-        event_type = message.get('event')
+        # Support both 'event' (legacy) and 'type' (WMS pipeline) fields
+        event_type = message.get('event') or message.get('type')
         data = message.get('data', {})
-        
+
         print(f"Received RabbitMQ message: {event_type}")
-        
+
         if event_type == 'order_created':
-            broadcast_order_created(
-                data.get('order_id'),
-                data.get('client_id'),
-                data
-            )
-        
+            order_id = data.get('order_id') or message.get('order_id')
+            client_id = data.get('client_id') or message.get('client_id')
+            client_user_id = data.get('client_user_id') or message.get('client_user_id')
+            broadcast_order_created(order_id, client_id, client_user_id, data)
+
         elif event_type == 'order_status_update':
-            broadcast_order_status_update(
-                data.get('order_id'),
-                data.get('status'),
-                data
+            order_id = data.get('order_id') or message.get('order_id')
+            status = data.get('status') or message.get('status')
+            client_user_id = data.get('client_user_id')
+            broadcast_order_status_update(order_id, status, client_user_id, data)
+
+        elif event_type == 'middleware_update':
+            order_id = data.get('order_id') or message.get('order_id')
+            stage = message.get('stage') or data.get('stage')
+            client_user_id = data.get('client_user_id')
+            broadcast_middleware_update(
+                order_id, stage, client_user_id,
+                label=data.get('label'),
+                warehouse_location=data.get('warehouse_location')
             )
-        
+
         elif event_type == 'driver_assigned':
             broadcast_driver_assigned(
-                data.get('order_id'),
-                data.get('driver_id'),
-                data.get('client_id'),
+                data.get('order_id') or message.get('order_id'),
+                data.get('driver_id') or message.get('driver_id'),
+                data.get('client_id') or message.get('client_id'),
                 data
             )
-        
+
         elif event_type == 'delivery_completed':
             broadcast_delivery_completed(
-                data.get('order_id'),
-                data.get('driver_id'),
-                data.get('client_id'),
+                data.get('order_id') or message.get('order_id'),
+                data.get('driver_id') or message.get('driver_id'),
+                data.get('client_id') or message.get('client_id'),
                 data
             )
-        
+
         elif event_type == 'notification':
             broadcast_notification(
                 data.get('user_id'),
                 data
             )
-        
+
         elif event_type == 'driver_location':
             # Forward driver location updates
             socketio.emit('driver_location', data, room='admin_room')
             if data.get('order_id'):
                 socketio.emit('driver_location', data, room=f'order_{data["order_id"]}')
-        
+
         else:
             print(f"Unknown event type: {event_type}")
-        
+
         ch.basic_ack(delivery_tag=method.delivery_tag)
-        
+
     except Exception as e:
         print(f"Error processing RabbitMQ message: {e}")
         ch.basic_ack(delivery_tag=method.delivery_tag)
@@ -595,6 +630,12 @@ def start_rabbitmq_consumer():
                     queue=queue_name,
                     routing_key='notification.*'
                 )
+                # Bind to real-time pipeline events published by WMS service
+                channel.queue_bind(
+                    exchange='swifttrack.notifications',
+                    queue=queue_name,
+                    routing_key='realtime.#'
+                )
                 
                 channel.basic_qos(prefetch_count=1)
                 channel.basic_consume(
@@ -638,6 +679,7 @@ def api_broadcast():
         broadcast_order_status_update(
             payload.get('order_id'),
             payload.get('status'),
+            payload.get('client_user_id'),
             payload
         )
     elif event_type == 'order_created':
@@ -717,4 +759,4 @@ def send_to_room():
 if __name__ == '__main__':
     print("Starting SwiftTrack WebSocket Service...")
     start_rabbitmq_consumer()
-    socketio.run(app, host='0.0.0.0', port=5006, debug=False)
+    socketio.run(app, host='0.0.0.0', port=5006, debug=False, allow_unsafe_werkzeug=True)
