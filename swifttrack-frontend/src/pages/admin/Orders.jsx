@@ -27,24 +27,36 @@ const AdminOrders = () => {
 
   // Handle real-time order updates
   const handleOrderStatusUpdate = useCallback((data) => {
-    setOrders(prev => prev.map(o => 
-      o.id === data.orderId ? { ...o, status: data.status } : o
+    setOrders(prev => prev.map(o =>
+      String(o.id) === String(data.orderId) ? { ...o, status: data.status } : o
     ));
-    toast.success(`Order ${data.orderId} status: ${data.status.replace(/_/g, ' ')}`);
+    // Keep detail modal in sync if open for this order
+    setSelectedOrder(prev =>
+      prev && String(prev.id) === String(data.orderId) ? { ...prev, status: data.status } : prev
+    );
+    const s = data.status;
+    if (s === 'delivered') toast.success(`✅ Order ${data.orderId} delivered!`);
+    else if (s === 'failed') toast.error(`❌ Order ${data.orderId} delivery failed`);
+    else if (s === 'cancelled') toast(`Order ${data.orderId} cancelled`, { icon: '🚫' });
+    else if (s === 'out_for_delivery') toast(`Order ${data.orderId} out for delivery`, { icon: '🚚' });
+    else toast.success(`Order ${data.orderId}: ${s.replace(/_/g, ' ')}`);
   }, []);
 
   // Handle new order notifications
   const handleNewOrder = useCallback((data) => {
-    toast.success(`New order received: ${data.orderId}`);
+    toast.success(`🆕 New order received: ${data.orderId}`);
     fetchData();
   }, []);
 
   // Handle delivery completed
   const handleDeliveryCompleted = useCallback((data) => {
-    setOrders(prev => prev.map(o => 
-      o.id === data.orderId ? { ...o, status: 'delivered' } : o
+    setOrders(prev => prev.map(o =>
+      String(o.id) === String(data.orderId) ? { ...o, status: 'delivered' } : o
     ));
-    toast.success(`Order ${data.orderId} has been delivered!`);
+    setSelectedOrder(prev =>
+      prev && String(prev.id) === String(data.orderId) ? { ...prev, status: 'delivered' } : prev
+    );
+    toast.success(`✅ Order ${data.orderId} has been delivered!`);
   }, []);
 
   // Set up WebSocket connection
@@ -52,11 +64,19 @@ const AdminOrders = () => {
     wsService.connect();
     setWsConnected(wsService.socket?.connected || false);
 
+    // Track live connection state changes
+    const onConnect = () => setWsConnected(true);
+    const onDisconnect = () => setWsConnected(false);
+    wsService.socket?.on('connect', onConnect);
+    wsService.socket?.on('disconnect', onDisconnect);
+
     const unsubStatus = wsService.on('order_status_update', handleOrderStatusUpdate);
     const unsubNew = wsService.on('new_order', handleNewOrder);
     const unsubDelivered = wsService.on('delivery_completed', handleDeliveryCompleted);
 
     return () => {
+      wsService.socket?.off('connect', onConnect);
+      wsService.socket?.off('disconnect', onDisconnect);
       unsubStatus();
       unsubNew();
       unsubDelivered();
@@ -151,7 +171,8 @@ const AdminOrders = () => {
 
   const statusOptions = [
     { value: 'all', label: 'All Status' }, { value: 'pending', label: 'Pending' }, { value: 'in_warehouse', label: 'In Warehouse' },
-    { value: 'out_for_delivery', label: 'Out for Delivery' }, { value: 'delivered', label: 'Delivered' }, { value: 'cancelled', label: 'Cancelled' },
+    { value: 'out_for_delivery', label: 'Out for Delivery' }, { value: 'delivered', label: 'Delivered' },
+    { value: 'failed', label: 'Failed' }, { value: 'cancelled', label: 'Cancelled' },
   ];
 
   const dateOptions = [
