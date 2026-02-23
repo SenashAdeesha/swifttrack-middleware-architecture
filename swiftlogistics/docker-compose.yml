@@ -237,12 +237,6 @@ services:
       retries: 3
       start_period: 20s
     restart: unless-stopped
-    deploy:
-      replicas: 2  # Multiple consumers for high throughput
-      resources:
-        limits:
-          cpus: '0.25'
-          memory: 128M
 
   # Notification Service - Handles async notifications
   notification-service:
@@ -274,7 +268,7 @@ services:
       start_period: 20s
     restart: unless-stopped
     deploy:
-      replicas: 2
+      replicas: 2  # No port conflict - these are consumers only
       resources:
         limits:
           cpus: '0.25'
@@ -359,6 +353,49 @@ services:
         limits:
           cpus: '0.5'
           memory: 256M
+
+  # DLQ Handler Service - Dead Letter Queue processing
+  dlq-handler:
+    build:
+      context: ./dlq-handler
+      dockerfile: Dockerfile
+    container_name: swifttrack-dlq-handler
+    environment:
+      - DB_HOST=postgres
+      - DB_NAME=swifttrack
+      - DB_USER=swifttrack_user
+      - DB_PASSWORD=${POSTGRES_PASSWORD:-swifttrack_secure_pass_2026}
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USER=${RABBITMQ_USER:-swifttrack}
+      - RABBITMQ_PASS=${RABBITMQ_PASS:-swifttrack_mq_2026}
+      - RABBITMQ_VHOST=swifttrack_vhost
+      - DLQ_SERVICE_PORT=5008
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    ports:
+      - "5008:5008"
+    volumes:
+      - ./shared:/app/shared:ro
+    networks:
+      - swifttrack-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5008/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+    deploy:
+      replicas: 1
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
 
 # ==========================================================================
 # NETWORKS
