@@ -59,7 +59,7 @@ class WebSocketService {
     });
 
     this.socket.on('connect', () => {
-      console.log('🔌 WebSocket connected');
+      console.log('[WS] WebSocket connected');
       this.reconnectAttempts = 0;
       // Automatically authenticate if user is logged in
       const token = localStorage.getItem('swifttrack_token');
@@ -69,7 +69,7 @@ class WebSocketService {
     });
 
     this.socket.on('disconnect', (reason) => {
-      console.log('🔌 WebSocket disconnected:', reason);
+      console.log('[WS] WebSocket disconnected:', reason);
     });
 
     this.socket.on('error', (error) => {
@@ -231,6 +231,11 @@ export const ordersAPI = {
     return { data: response.data.data || response.data };
   },
 
+  startDelivery: async (orderId) => {
+    const response = await api.post(`/orders/${orderId}/start_delivery`, {});
+    return { data: response.data };
+  },
+
   uploadProof: async (orderId, proofData) => {
     const response = await api.post(`/orders/${orderId}/proof`, proofData);
     return { data: response.data };
@@ -366,8 +371,8 @@ export const adminAPI = {
 // NOTIFICATIONS API
 // =============================================================================
 export const notificationsAPI = {
-  getAll: async (userId) => {
-    const response = await api.get(`/notifications?userId=${userId}`);
+  getAll: async () => {
+    const response = await api.get('/notifications');
     return { data: response.data.data || response.data.notifications || [] };
   },
 
@@ -376,8 +381,13 @@ export const notificationsAPI = {
     return { data: response.data };
   },
 
-  markAllRead: async (userId) => {
-    const response = await api.put(`/notifications/read-all?userId=${userId}`);
+  markAllRead: async () => {
+    const response = await api.put('/notifications/read-all');
+    return { data: response.data };
+  },
+
+  delete: async (notificationId) => {
+    const response = await api.delete(`/notifications/${notificationId}`);
     return { data: response.data };
   },
 };
