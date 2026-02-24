@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   MapPin, Package, Scale, Zap, Calendar, ArrowLeft, CheckCircle,
   User, Phone, Mail, Ruler, Shield, Clock, DollarSign, Save,
-  AlertCircle, Box, FileText,
+  AlertCircle, Box, FileText, AlertTriangle, PenLine, Sunrise, Sun, Sunset,
 } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardDescription, Button, Input, Select, Modal } from '../../components/common';
 import { ordersAPI } from '../../services/api';
@@ -12,9 +12,9 @@ import { PACKAGE_TYPES, PRIORITIES } from '../../data/mockData';
 import toast from 'react-hot-toast';
 
 const TIME_SLOTS = [
-  { value: 'morning', label: '🌅 Morning (8 AM - 12 PM)', desc: 'Best for residential' },
-  { value: 'afternoon', label: '☀️ Afternoon (12 PM - 5 PM)', desc: 'Standard hours' },
-  { value: 'evening', label: '🌆 Evening (5 PM - 9 PM)', desc: 'After work delivery' },
+  { value: 'morning', label: 'Morning (8 AM - 12 PM)', desc: 'Best for residential', Icon: Sunrise },
+  { value: 'afternoon', label: 'Afternoon (12 PM - 5 PM)', desc: 'Standard hours', Icon: Sun },
+  { value: 'evening', label: 'Evening (5 PM - 9 PM)', desc: 'After work delivery', Icon: Sunset },
 ];
 
 const INSURANCE_OPTIONS = [
@@ -239,7 +239,7 @@ const NewOrder = () => {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <Select label="Package Type" name="packageType" value={formData.packageType} onChange={handleChange} error={errors.packageType} options={PACKAGE_TYPES.map(t => ({ value: t.value, label: `${t.icon} ${t.label}` }))} placeholder="Select type" />
+              <Select label="Package Type" name="packageType" value={formData.packageType} onChange={handleChange} error={errors.packageType} options={PACKAGE_TYPES.map(t => ({ value: t.value, label: t.label }))} placeholder="Select type" />
               <Input label="Declared Value ($)" name="packageValue" type="number" placeholder="100" value={formData.packageValue} onChange={handleChange} icon={DollarSign} />
             </div>
 
@@ -264,11 +264,11 @@ const NewOrder = () => {
             <div className="flex flex-wrap gap-4">
               <label className="flex items-center gap-3 p-4 bg-gray-50 dark:bg-slate-700 rounded-xl cursor-pointer">
                 <input type="checkbox" name="fragile" checked={formData.fragile} onChange={handleChange} className="w-5 h-5 accent-primary-600" />
-                <div><span className="font-medium text-gray-900 dark:text-white">🔮 Fragile Package</span><p className="text-xs text-gray-500">Handle with extra care</p></div>
+                <div className="flex flex-col"><span className="font-medium text-gray-900 dark:text-white flex items-center gap-1"><AlertTriangle className="w-4 h-4 text-yellow-500" /> Fragile Package</span><p className="text-xs text-gray-500">Handle with extra care</p></div>
               </label>
               <label className="flex items-center gap-3 p-4 bg-gray-50 dark:bg-slate-700 rounded-xl cursor-pointer">
                 <input type="checkbox" name="signatureRequired" checked={formData.signatureRequired} onChange={handleChange} className="w-5 h-5 accent-primary-600" />
-                <div><span className="font-medium text-gray-900 dark:text-white">✍️ Signature Required</span><p className="text-xs text-gray-500">Recipient must sign</p></div>
+                <div className="flex flex-col"><span className="font-medium text-gray-900 dark:text-white flex items-center gap-1"><PenLine className="w-4 h-4 text-blue-500" /> Signature Required</span><p className="text-xs text-gray-500">Recipient must sign</p></div>
               </label>
             </div>
 
@@ -344,8 +344,8 @@ const NewOrder = () => {
                 <div><span className="text-xs text-gray-400">Insurance</span><p className="text-gray-900 dark:text-white font-medium capitalize">{formData.insurance}</p></div>
               </div>
               <div className="flex gap-3 mt-3">
-                {formData.fragile && <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-1 rounded-full">🔮 Fragile</span>}
-                {formData.signatureRequired && <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full">✍️ Signature</span>}
+                {formData.fragile && <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-1 rounded-full flex items-center gap-1 w-fit"><AlertTriangle className="w-3 h-3" /> Fragile</span>}
+                {formData.signatureRequired && <span className="text-xs bg-blue-100 text-blue-800 px-2 py-1 rounded-full flex items-center gap-1 w-fit"><PenLine className="w-3 h-3" /> Signature</span>}
               </div>
             </div>
 
