@@ -99,8 +99,9 @@ const Delivery = () => {
   };
 
   const statusBadge = (st) => {
-    const v = { pending: 'warning', in_warehouse: 'info', out_for_delivery: 'primary', delivered: 'success', failed: 'danger' };
-    return <Badge variant={v[st] || 'default'}>{st?.replace(/_/g, ' ')}</Badge>;
+    const v = { pending: 'warning', confirmed: 'warning', in_warehouse: 'warning', out_for_delivery: 'primary', delivered: 'success', failed: 'danger' };
+    const l = { confirmed: 'Pending', in_warehouse: 'Pending' };
+    return <Badge variant={v[st] || 'default'}>{l[st] || st?.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())}</Badge>;
   };
 
   const handlePickupConfirm = async () => {
@@ -550,7 +551,7 @@ const Delivery = () => {
                 <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
                   {photoData ? 'Photo Captured' : 'Take Photo'}
                 </span>
-                {photoData && <span className="text-xs text-green-600 font-medium">✓ Ready</span>}
+                {photoData && <span className="text-xs text-green-600 font-medium flex items-center gap-0.5"><CheckCircle className="w-3 h-3" /> Ready</span>}
               </button>
               {photoData && (
                 <button onClick={() => setPhotoData(null)} className="text-xs text-red-500 mt-1">Remove</button>
@@ -575,7 +576,7 @@ const Delivery = () => {
                 <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
                   {signatureData ? 'Signature Captured' : 'Get Signature'}
                 </span>
-                {signatureData && <span className="text-xs text-green-600 font-medium">✓ Ready</span>}
+                {signatureData && <span className="text-xs text-green-600 font-medium flex items-center gap-0.5"><CheckCircle className="w-3 h-3" /> Ready</span>}
               </button>
               {signatureData && (
                 <button onClick={clearSignature} className="text-xs text-red-500 mt-1">Clear</button>
