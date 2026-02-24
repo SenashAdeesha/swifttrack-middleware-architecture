@@ -58,7 +58,7 @@ const Orders = () => {
       triggerFlash(orderId);
       if (newStatus === 'delivered') toast.success(`Order ${orderId} delivered!`);
       else if (newStatus === 'failed') toast.error(`Order ${orderId} delivery failed`);
-      else if (newStatus === 'out_for_delivery') toast(`Order ${orderId} is out for delivery`, { icon: '🚚' });
+      else if (newStatus === 'out_for_delivery') toast(`Order ${orderId} is out for delivery`);
       // Clear pipeline once order moves past warehouse
       if (['out_for_delivery', 'delivered', 'failed', 'cancelled'].includes(newStatus)) {
         setMiddlewareStages(prev => { const n = { ...prev }; delete n[orderId]; return n; });
@@ -74,7 +74,7 @@ const Orders = () => {
       setSelectedOrder(prev =>
         prev && String(prev.id) === orderId ? { ...prev, status: 'delivered' } : prev
       );
-      toast.success(`🎉 Your order ${orderId} has been delivered!`);
+      toast.success(`Your order ${orderId} has been delivered!`);
     });
 
     const unsubMiddleware = wsService.on('middleware_update', (data) => {
@@ -85,6 +85,27 @@ const Orders = () => {
       triggerFlash(orderId);
     });
 
+    const unsubDriverAssigned = wsService.on('driver_assigned', (data) => {
+      const orderId = String(data.order_id || data.orderId);
+      const driverName = data.data?.driver_name || data.driver_name;
+      const driverPhone = data.data?.driver_phone || data.driver_phone;
+      const vehicleType = data.data?.vehicle_type || data.vehicle_type;
+      const vehiclePlate = data.data?.vehicle_plate || data.vehicle_plate;
+      if (!orderId) return;
+      setOrders(prev => prev.map(o =>
+        String(o.id) === orderId
+          ? { ...o, driverName, driverPhone, vehicleType, vehiclePlate, driver_id: data.driver_id }
+          : o
+      ));
+      setSelectedOrder(prev =>
+        prev && String(prev.id) === orderId
+          ? { ...prev, driverName, driverPhone, vehicleType, vehiclePlate, driver_id: data.driver_id }
+          : prev
+      );
+      triggerFlash(orderId);
+      if (driverName) toast.success(`Driver ${driverName} assigned to order ${orderId}`);
+    });
+
     const unsubNewOrder = wsService.on('new_order', () => {
       fetchOrders();
     });
@@ -93,6 +114,7 @@ const Orders = () => {
       unsubStatus();
       unsubDelivered();
       unsubMiddleware();
+      unsubDriverAssigned();
       unsubNewOrder();
     };
   }, [user?.id, user?.role]);
@@ -341,7 +363,18 @@ const Orders = () => {
                         );
                       })()}
                     </td>
-                    <td className="py-4 px-6"><span className="text-gray-700 dark:text-gray-300">{order.driverName || '-'}</span></td>
+                    <td className="py-4 px-6">
+                      {order.driverName ? (
+                        <div>
+                          <p className="text-gray-700 dark:text-gray-300 font-medium">{order.driverName}</p>
+                          {order.vehicleType && (
+                            <p className="text-xs text-gray-400 mt-0.5">{order.vehicleType}{order.vehiclePlate ? ` · ${order.vehiclePlate}` : ''}</p>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-gray-400">—</span>
+                      )}
+                    </td>
                     <td className="py-4 px-6"><span className="text-gray-500 dark:text-gray-400">{new Date(order.createdAt).toLocaleDateString()}</span></td>
                     <td className="py-4 px-6">
                       <div className="flex items-center justify-end gap-1">
@@ -396,9 +429,25 @@ const Orders = () => {
                 <p className="text-xs text-gray-400">Est. Delivery</p>
                 <p className="font-medium text-gray-900 dark:text-white text-sm">{new Date(selectedOrder.estimatedDelivery).toLocaleDateString()}</p>
               </div>
-              <div className="p-3 bg-gray-50 dark:bg-slate-700 rounded-xl">
-                <p className="text-xs text-gray-400">Driver</p>
-                <p className="font-medium text-gray-900 dark:text-white text-sm">{selectedOrder.driverName || 'Unassigned'}</p>
+              <div className="p-3 bg-gray-50 dark:bg-slate-700 rounded-xl col-span-3">
+                <p className="text-xs text-gray-400 mb-1">Driver</p>
+                {selectedOrder.driverName ? (
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full bg-primary-100 dark:bg-primary-900/40 flex items-center justify-center">
+                      <Truck className="w-4 h-4 text-primary-600 dark:text-primary-400" />
+                    </div>
+                    <div>
+                      <p className="font-medium text-gray-900 dark:text-white text-sm">{selectedOrder.driverName}</p>
+                      {(selectedOrder.vehicleType || selectedOrder.driverPhone) && (
+                        <p className="text-xs text-gray-500">
+                          {[selectedOrder.vehicleType, selectedOrder.vehiclePlate, selectedOrder.driverPhone].filter(Boolean).join(' · ')}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="font-medium text-gray-500 dark:text-gray-400 text-sm">Unassigned</p>
+                )}
               </div>
             </div>
             <div className="flex gap-3 pt-4 border-t border-gray-200 dark:border-slate-700">
