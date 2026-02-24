@@ -78,7 +78,7 @@ const Dashboard = () => {
       confirmed:        'Confirmed',
       in_warehouse:     'In Warehouse',
       out_for_delivery: 'Out for Delivery',
-      delivered:        'Delivered ✅',
+      delivered:        'Delivered',
       failed:           'Delivery Failed',
       cancelled:        'Cancelled',
     };
@@ -96,7 +96,7 @@ const Dashboard = () => {
     const id = String(data.orderId || data.order_id);
     setOrders(prev => prev.map(o => String(o.id) === id ? { ...o, status: 'delivered' } : o));
     triggerFlash(id);
-    toast.success(`🎉 Order #${id} delivered!`, { duration: 4000 });
+    toast.success(`Order #${id} delivered!`, { duration: 4000 });
     setTimeout(() => fetchDashboardData(true), 1000);
   }, [triggerFlash, fetchDashboardData]);
 
@@ -117,7 +117,7 @@ const Dashboard = () => {
   // WS: driver assigned — toast + refresh to get driver name
   const handleDriverAssigned = useCallback((data) => {
     const id = String(data.orderId || data.order_id);
-    toast.success(`Driver assigned to Order #${id}`, { icon: '🚚', duration: 3000 });
+    toast.success(`Driver assigned to Order #${id}`, { duration: 3000 });
     setTimeout(() => fetchDashboardData(true), 500);
   }, [fetchDashboardData]);
 
