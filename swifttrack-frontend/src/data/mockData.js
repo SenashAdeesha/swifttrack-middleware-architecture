@@ -12,13 +12,13 @@ export const ORDER_STATUSES = {
 
 // Package Types
 export const PACKAGE_TYPES = [
-  { value: 'document', label: 'Document', icon: '📄' },
-  { value: 'small_box', label: 'Small Box', icon: '📦' },
-  { value: 'medium_box', label: 'Medium Box', icon: '📦' },
-  { value: 'large_box', label: 'Large Box', icon: '🗃️' },
-  { value: 'fragile', label: 'Fragile', icon: '⚠️' },
-  { value: 'electronics', label: 'Electronics', icon: '💻' },
-  { value: 'perishable', label: 'Perishable', icon: '❄️' },
+  { value: 'document', label: 'Document' },
+  { value: 'small_box', label: 'Small Box' },
+  { value: 'medium_box', label: 'Medium Box' },
+  { value: 'large_box', label: 'Large Box' },
+  { value: 'fragile', label: 'Fragile' },
+  { value: 'electronics', label: 'Electronics' },
+  { value: 'perishable', label: 'Perishable' },
 ];
 
 // Priority Levels

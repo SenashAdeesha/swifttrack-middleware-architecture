@@ -134,7 +134,7 @@ def send_email_notification(user_id, subject, message, order_id=None):
         if user:
             # Store notification in database
             cursor.execute("""
-                INSERT INTO notifications (user_id, type, title, message, is_read)
+                INSERT INTO notifications (user_id, type, title, message, read)
                 VALUES (%s, 'email', %s, %s, false)
             """, (user_id, subject, message))
             
@@ -171,7 +171,7 @@ def send_sms_notification(user_id, message, order_id=None):
         if user and user.get('phone'):
             # Store notification
             cursor.execute("""
-                INSERT INTO notifications (user_id, type, title, message, is_read)
+                INSERT INTO notifications (user_id, type, title, message, read)
                 VALUES (%s, 'sms', 'SMS Notification', %s, false)
             """, (user_id, message))
             
@@ -203,7 +203,7 @@ def send_push_notification(user_id, title, message, data=None):
         
         # Store notification
         cursor.execute("""
-            INSERT INTO notifications (user_id, type, title, message, is_read, data)
+            INSERT INTO notifications (user_id, type, title, message, read, data)
             VALUES (%s, 'push', %s, %s, false, %s)
         """, (user_id, title, message, json.dumps(data or {})))
         
@@ -249,7 +249,7 @@ def notify_order_status_change(order_id, status, message):
             
             send_push_notification(
                 user_id,
-                f"Order Update",
+                f"Order {status.replace('_', ' ').title()}",
                 message,
                 {'order_id': order_id, 'status': status}
             )

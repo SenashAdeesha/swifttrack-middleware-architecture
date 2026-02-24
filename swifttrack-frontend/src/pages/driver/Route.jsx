@@ -240,18 +240,26 @@ const Route = () => {
   const skippedCount   = filteredStops.filter(s => s.skipped).length;
   const progress       = filteredStops.length > 0 ? Math.round((completedCount / filteredStops.length) * 100) : 0;
 
-  const handleStart = (stop, e) => {
+  const handleStart = async (stop, e) => {
     e?.stopPropagation();
     setActiveStopId(stop.id);
     setStopPhase('started');
     resetWait();
     setShowDeliveryModal(true);
+    // Record in DB so tracking pages show "Driver started delivery" immediately
+    try {
+      await ordersAPI.startDelivery(stop.orderId || stop.id);
+    } catch (err) {
+      // Non-blocking — don't fail the UI if this fails
+      console.warn('Failed to record delivery start:', err);
+    }
   };
 
   const handleNavigate = () => {
     if (!activeStop) return;
     window.open(mapsUrl(activeStop.address), '_blank', 'noopener,noreferrer');
     setStopPhase('navigating');
+    setShowDeliveryModal(false);  // close modal — card button becomes "I'm Arrived"
     toast.success('Navigation opened in Google Maps');
   };
 
@@ -259,7 +267,8 @@ const Route = () => {
 
   const closeDeliveryModal = () => {
     setShowDeliveryModal(false);
-    setStopPhase(null);
+    // Keep 'navigating' phase so the card button shows "I'm Arrived"
+    if (stopPhase !== 'navigating') setStopPhase(null);
   };
 
   const advanceToNext = useCallback((updated, doneId) => {
@@ -278,16 +287,22 @@ const Route = () => {
     // Lock the stop locally BEFORE the API call so any concurrent re-fetch
     // cannot revert it while the network request is still in-flight.
     localDeliveredRef.current.add(String(activeStop.orderId || activeStop.id));
-    try { await ordersAPI.markDelivered(activeStop.orderId || activeStop.id); } catch (err) { console.error(err); }
+    try {
+      await ordersAPI.markDelivered(activeStop.orderId || activeStop.id);
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to save delivery — please check connection and retry');
+      localDeliveredRef.current.delete(String(activeStop.orderId || activeStop.id));
+      return;  // Don't advance if DB write failed
+    }
     const updated = stops.map(s => s.id === activeStop.id ? { ...s, completed: true, status: 'delivered' } : s);
     setStops(updated);
-    toast.success(`Stop ${activeStop.stopNum} delivered! \u2713`);
+    toast.success(`Stop ${activeStop.stopNum} delivered!`);
     const remaining = updated.filter(s => !s.completed && !s.skipped);
     if (remaining.length === 0) {
       setShowDeliveryModal(false); setStopPhase(null);
-      // Mark driver as available again in the database
       try { await driverAPI.updateStatus(user?.id, 'available'); } catch (err) { console.error('Driver status update failed:', err); }
-      toast.success('\uD83C\uDF89 All stops delivered! Great work today.');
+      toast.success('All stops delivered! Great work today.');
     } else {
       advanceToNext(updated, activeStop.id);
     }
@@ -295,12 +310,18 @@ const Route = () => {
 
   const handleSkipStop = async () => {
     if (!skipReason) { toast.error('Please select a reason'); return; }
-    // Lock the stop locally before the API call.
     localSkippedRef.current.add(String(activeStop.orderId || activeStop.id));
-    try { await ordersAPI.markFailed(activeStop.orderId || activeStop.id, { reason: skipReason, note: skipNote }); } catch (err) { console.error(err); }
+    try {
+      await ordersAPI.markFailed(activeStop.orderId || activeStop.id, { reason: skipReason, notes: skipNote });
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to save skip — please check connection and retry');
+      localSkippedRef.current.delete(String(activeStop.orderId || activeStop.id));
+      return;
+    }
     const updated = stops.map(s => s.id === activeStop.id ? { ...s, skipped: true } : s);
     setStops(updated); setShowSkipModal(false); setSkipReason(''); setSkipNote('');
-    toast(`Stop ${activeStop.stopNum} skipped.`, { icon: '\u23ED' });
+    toast(`Stop ${activeStop.stopNum} skipped.`, { icon: '⏭' });
     advanceToNext(updated, activeStop.id);
   };
 
@@ -550,11 +571,19 @@ const Route = () => {
                             <Eye className="w-3.5 h-3.5"/> View Details
                           </button>
                           {!isDone && !isSkipped && (
-                            <button onClick={(e)=>handleStart(stop,e)}
-                              className="ml-auto flex items-center gap-1.5 px-5 py-2 rounded-xl text-xs font-bold text-white bg-primary-500 hover:bg-primary-600 active:scale-95 shadow-sm shadow-primary-200 dark:shadow-primary-900/40 transition-all">
-                              <Navigation className="w-3.5 h-3.5"/>
-                              {isActive && stopPhase ? 'Resume' : 'Start Delivery'}
-                            </button>
+                            isActive && stopPhase === 'navigating' ? (
+                              <button onClick={(e) => { e.stopPropagation(); setStopPhase('action'); setShowDeliveryModal(true); }}
+                                className="ml-auto flex items-center gap-1.5 px-5 py-2 rounded-xl text-xs font-bold text-white bg-green-500 hover:bg-green-600 active:scale-95 shadow-sm shadow-green-200 dark:shadow-green-900/40 transition-all">
+                                <Flag className="w-3.5 h-3.5"/>
+                                I&apos;m Arrived
+                              </button>
+                            ) : (
+                              <button onClick={(e)=>handleStart(stop,e)}
+                                className="ml-auto flex items-center gap-1.5 px-5 py-2 rounded-xl text-xs font-bold text-white bg-primary-500 hover:bg-primary-600 active:scale-95 shadow-sm shadow-primary-200 dark:shadow-primary-900/40 transition-all">
+                                <Navigation className="w-3.5 h-3.5"/>
+                                {isActive && stopPhase ? 'Resume' : 'Start Delivery'}
+                              </button>
+                            )
                           )}
                         </div>
                       </div>
@@ -671,8 +700,8 @@ const Route = () => {
                     </button>
                   ) : (
                     <button onClick={handleArrived}
-                      className="w-full flex items-center justify-center gap-3 py-4 bg-red-500 hover:bg-red-600 active:scale-[0.98] text-white font-bold text-base rounded-xl transition-all shadow-md animate-pulse">
-                      <StopCircle className="w-5 h-5"/> I&apos;ve Arrived \u2014 Stop
+                      className="w-full flex items-center justify-center gap-3 py-4 bg-green-500 hover:bg-green-600 active:scale-[0.98] text-white font-bold text-base rounded-xl transition-all shadow-md shadow-green-200 dark:shadow-green-900/50">
+                      <Flag className="w-5 h-5"/> I&apos;m Arrived
                     </button>
                   )}
                 </>

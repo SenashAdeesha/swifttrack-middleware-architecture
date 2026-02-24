@@ -249,7 +249,10 @@ def get_orders():
         query = """
             SELECT o.*, 
                    u.name as client_name,
-                   d_user.name as driver_name
+                   d_user.name as driver_name,
+                   d_user.phone as driver_phone,
+                   d.vehicle_type as driver_vehicle_type,
+                   d.vehicle_plate as driver_vehicle_plate
             FROM orders o
             LEFT JOIN clients c ON o.client_id = c.id
             LEFT JOIN users u ON c.user_id = u.id
@@ -304,6 +307,9 @@ def get_orders():
             order_dict['driverId'] = str(order['driver_id']) if order['driver_id'] else None
             order_dict['clientName'] = order['client_name']
             order_dict['driverName'] = order['driver_name']
+            order_dict['driverPhone'] = order['driver_phone']
+            order_dict['vehicleType'] = order['driver_vehicle_type']
+            order_dict['vehiclePlate'] = order['driver_vehicle_plate']
             order_dict['pickupAddress'] = order['pickup_address']
             order_dict['deliveryAddress'] = order['delivery_address']
             order_dict['packageWeight'] = float(order['package_weight']) if order['package_weight'] else 0
@@ -333,7 +339,10 @@ def get_order(order_id):
         cursor.execute("""
             SELECT o.*, 
                    u.name as client_name,
-                   d_user.name as driver_name
+                   d_user.name as driver_name,
+                   d_user.phone as driver_phone,
+                   d.vehicle_type as driver_vehicle_type,
+                   d.vehicle_plate as driver_vehicle_plate
             FROM orders o
             LEFT JOIN clients c ON o.client_id = c.id
             LEFT JOIN users u ON c.user_id = u.id
@@ -362,6 +371,9 @@ def get_order(order_id):
         order_dict['driverId'] = str(order['driver_id']) if order['driver_id'] else None
         order_dict['clientName'] = order['client_name']
         order_dict['driverName'] = order['driver_name']
+        order_dict['driverPhone'] = order['driver_phone']
+        order_dict['vehicleType'] = order['driver_vehicle_type']
+        order_dict['vehiclePlate'] = order['driver_vehicle_plate']
         order_dict['pickupAddress'] = order['pickup_address']
         order_dict['deliveryAddress'] = order['delivery_address']
         order_dict['packageWeight'] = float(order['package_weight']) if order['package_weight'] else 0
@@ -921,6 +933,71 @@ def mark_failed(order_id):
     except Exception as e:
         logger.error("Failed to mark order as failed", error=str(e), order_id=order_id)
         return jsonify({'error': 'Failed to mark order as failed'}), 500
+
+@app.route('/orders/<order_id>/start_delivery', methods=['POST'])
+def start_delivery(order_id):
+    """
+    =========================================================================
+    START DELIVERY
+    =========================================================================
+    Called by the driver when they click "Start Delivery" on the Route page.
+    Does NOT change the order status (already out_for_delivery) but writes a
+    dated timeline entry and broadcasts a timeline_update via WebSocket so
+    client and admin tracking pages can reflect the exact moment the driver
+    started heading to the customer.
+    =========================================================================
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT id, client_id, driver_id, status FROM orders WHERE id = %s", (order_id,))
+        order = cursor.fetchone()
+
+        if not order:
+            conn.close()
+            return jsonify({'error': 'Order not found'}), 404
+
+        # Write timeline entry
+        cursor.execute(
+            "INSERT INTO order_timeline (order_id, status, description) VALUES (%s, 'started_delivery', 'Driver has started the delivery')",
+            (order_id,)
+        )
+
+        # Resolve client user_id
+        client_user_id = None
+        if order.get('client_id'):
+            cursor.execute("SELECT user_id FROM clients WHERE id = %s", (order['client_id'],))
+            client_record = cursor.fetchone()
+            client_user_id = str(client_record['user_id']) if client_record else None
+
+        conn.commit()
+        conn.close()
+
+        now_iso = datetime.utcnow().isoformat()
+
+        # Broadcast timeline update so tracking pages update in real-time
+        publish_message('swifttrack.notifications', 'realtime.update', {
+            'type': 'timeline_update',
+            'order_id': order_id,
+            'entry': {
+                'status': 'started_delivery',
+                'description': 'Driver has started the delivery',
+                'time': now_iso
+            },
+            'data': {
+                'client_user_id': client_user_id,
+                'driver_id': str(order['driver_id']) if order['driver_id'] else None
+            }
+        })
+
+        logger.info("Driver started delivery", order_id=order_id)
+        return jsonify({'message': 'Delivery started', 'time': now_iso}), 200
+
+    except Exception as e:
+        logger.error("Failed to record delivery start", error=str(e), order_id=order_id)
+        return jsonify({'error': 'Failed to record delivery start'}), 500
+
 
 @app.route('/orders/<order_id>/assign', methods=['POST'])
 def assign_driver_to_order(order_id):

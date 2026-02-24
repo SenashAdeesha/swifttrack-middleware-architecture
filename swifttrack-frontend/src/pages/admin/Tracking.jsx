@@ -13,12 +13,12 @@ import toast from 'react-hot-toast';
 // -- Status helpers -----------------------------------------------------------
 const STATUS_CFG = {
   pending:          { label: 'Pending',          variant: 'warning',   dot: 'bg-yellow-400',  banner: 'from-yellow-400 to-orange-500' },
-  confirmed:        { label: 'Confirmed',         variant: 'info',      dot: 'bg-blue-400',    banner: 'from-blue-500 to-indigo-600'   },
-  in_warehouse:     { label: 'In Warehouse',      variant: 'secondary', dot: 'bg-purple-400',  banner: 'from-purple-500 to-indigo-600' },
-  out_for_delivery: { label: 'Out for Delivery',  variant: 'primary',   dot: 'bg-primary-400', banner: 'from-blue-500 to-indigo-600'   },
-  delivered:        { label: 'Delivered',         variant: 'success',   dot: 'bg-green-500',   banner: 'from-green-500 to-emerald-600' },
-  failed:           { label: 'Failed',            variant: 'danger',    dot: 'bg-red-500',     banner: 'from-red-500 to-rose-600'      },
-  cancelled:        { label: 'Cancelled',         variant: 'secondary', dot: 'bg-gray-400',    banner: 'from-gray-500 to-slate-600'    },
+  confirmed:        { label: 'Confirmed',        variant: 'primary',   dot: 'bg-blue-400',    banner: 'from-blue-500 to-indigo-600'   },
+  in_warehouse:     { label: 'In Warehouse',     variant: 'primary',   dot: 'bg-indigo-400',  banner: 'from-indigo-500 to-purple-600' },
+  out_for_delivery: { label: 'Out for Delivery', variant: 'primary',   dot: 'bg-primary-400', banner: 'from-blue-500 to-indigo-600'   },
+  delivered:        { label: 'Delivered',        variant: 'success',   dot: 'bg-green-500',   banner: 'from-green-500 to-emerald-600' },
+  failed:           { label: 'Failed',           variant: 'danger',    dot: 'bg-red-500',     banner: 'from-red-500 to-rose-600'      },
+  cancelled:        { label: 'Cancelled',        variant: 'secondary', dot: 'bg-gray-400',    banner: 'from-gray-500 to-slate-600'    },
 };
 const getSC = (s) =>
   STATUS_CFG[s] ?? { label: s?.replace(/_/g, ' ') ?? '—', variant: 'secondary', dot: 'bg-gray-400', banner: 'from-gray-500 to-slate-600' };
@@ -29,9 +29,15 @@ const fmtTime = (iso) => iso ? new Date(iso).toLocaleString('en-US', { month: 's
 const STATUS_STAGES   = ['pending', 'confirmed', 'in_warehouse', 'out_for_delivery', 'delivered'];
 const TERMINAL_STATUSES = ['failed', 'cancelled'];
 const getStatusProgress = (s) => {
-  if (TERMINAL_STATUSES.includes(s)) return 0;
+  if (s === 'failed')    return 80;
+  if (s === 'cancelled') return 20;
   const i = STATUS_STAGES.indexOf(s);
   return i >= 0 ? ((i + 1) / STATUS_STAGES.length) * 100 : 0;
+};
+const getTimelineTime = (status, tl) => {
+  if (!tl?.length) return null;
+  const entries = tl.filter(e => e.status === status);
+  return entries.length ? entries[entries.length - 1].time : null;
 };
 
 const ALL_STATUSES = ['pending', 'confirmed', 'in_warehouse', 'out_for_delivery', 'delivered', 'failed', 'cancelled'];
@@ -91,7 +97,16 @@ const AdminTracking = () => {
     const status = data.status;
     setOrders(prev => prev.map(o => String(o.id) === id ? { ...o, status } : o));
     if (String(orderId) === id) {
-      setOrder(prev => prev ? { ...prev, status, ...data } : prev);
+      setOrder(prev => {
+        if (!prev) return prev;
+        const now        = new Date().toISOString();
+        const existing   = prev.timeline || [];
+        const alreadyHas = existing.some(e => e.status === status);
+        return {
+          ...prev, ...data, status,
+          timeline: alreadyHas ? existing : [...existing, { status, time: now, description: `Status: ${status}` }],
+        };
+      });
       toast.success(`Order ${id}: ${status.replace(/_/g, ' ')}`);
     }
   }, [orderId]);
@@ -105,8 +120,30 @@ const AdminTracking = () => {
     const id = String(data.orderId || data.order_id);
     setOrders(prev => prev.map(o => String(o.id) === id ? { ...o, status: 'delivered' } : o));
     if (String(orderId) === id) {
-      setOrder(prev => prev ? { ...prev, status: 'delivered', deliveredTime: new Date().toISOString() } : prev);
-      toast.success(`✅ Order ${id} delivered!`);
+      setOrder(prev => {
+        if (!prev) return prev;
+        const now        = new Date().toISOString();
+        const existing   = prev.timeline || [];
+        const alreadyHas = existing.some(e => e.status === 'delivered');
+        return {
+          ...prev, status: 'delivered', delivered_at: now, deliveredAt: now,
+          timeline: alreadyHas ? existing : [...existing, { status: 'delivered', time: now, description: 'Package delivered successfully' }],
+        };
+      });
+      toast.success(`Order ${id} delivered!`);
+    }
+  }, [orderId]);
+
+  const handleTimelineUpdate = useCallback((data) => {
+    const id    = String(data.orderId || data.order_id);
+    const entry = data.entry;
+    if (String(orderId) === id && entry) {
+      setOrder(prev => {
+        if (!prev) return prev;
+        const existing   = prev.timeline || [];
+        const alreadyHas = existing.some(e => e.status === entry.status);
+        return alreadyHas ? prev : { ...prev, timeline: [...existing, entry] };
+      });
     }
   }, [orderId]);
 
@@ -124,13 +161,14 @@ const AdminTracking = () => {
     const u2 = wsService.on('driver_location',     handleDriverLocation);
     const u3 = wsService.on('delivery_completed',  handleDeliveryCompleted);
     const u4 = wsService.on('new_order',           handleNewOrder);
+    const u5 = wsService.on('timeline_update',     handleTimelineUpdate);
     return () => {
       if (orderId) wsService.unsubscribeFromOrder(orderId);
       wsService.socket?.off('connect',    onConn);
       wsService.socket?.off('disconnect', onDisconn);
-      u1(); u2(); u3(); u4();
+      u1(); u2(); u3(); u4(); u5();
     };
-  }, [orderId, handleStatusUpdate, handleDriverLocation, handleDeliveryCompleted, handleNewOrder]);
+  }, [orderId, handleStatusUpdate, handleDriverLocation, handleDeliveryCompleted, handleNewOrder, handleTimelineUpdate]);
 
   // -- Fetch order detail -----------------------------------------------------
   const fetchDetail = useCallback(async (silent = false) => {
@@ -221,13 +259,13 @@ const AdminTracking = () => {
     .sort((a, b) => new Date(b.created_at || b.createdAt || 0) - new Date(a.created_at || a.createdAt || 0));
 
   const timeline = order ? [
-    { status: 'pending',          label: 'Order Placed',      desc: 'Order received',                    time: order.createdAt     || order.created_at,     icon: Package       },
-    { status: 'confirmed',        label: 'Confirmed',         desc: 'Order confirmed by warehouse',      time: order.confirmedAt   || order.confirmed_at,   icon: Check         },
-    { status: 'in_warehouse',     label: 'At Warehouse',      desc: 'Package is being processed',        time: order.warehouseTime || order.warehouse_time, icon: Check         },
-    { status: 'out_for_delivery', label: 'Out for Delivery',  desc: 'Driver is heading to recipient',    time: order.dispatchTime  || order.dispatch_time,  icon: Truck         },
-    { status: 'delivered',        label: 'Delivered',         desc: 'Package delivered successfully',    time: order.deliveredTime || order.delivered_time, icon: Check         },
-    ...(order.status === 'failed'    ? [{ status: 'failed',    label: 'Delivery Failed',  desc: 'Delivery attempt was unsuccessful',  time: order.failedAt    || order.failed_at,    icon: AlertTriangle, terminal: true }] : []),
-    ...(order.status === 'cancelled' ? [{ status: 'cancelled', label: 'Order Cancelled',  desc: 'This order has been cancelled',      time: order.cancelledAt || order.cancelled_at, icon: X,             terminal: true }] : []),
+    { status: 'pending',          label: 'Order Placed',      desc: 'Order received in system',               time: order.created_at || order.createdAt,                                                              icon: Package       },
+    { status: 'confirmed',        label: 'Confirmed',         desc: 'Order confirmed by warehouse',           time: getTimelineTime('confirmed', order.timeline),                                                    icon: Check         },
+    { status: 'in_warehouse',     label: 'At Warehouse',      desc: 'Package is being processed',             time: getTimelineTime('in_warehouse', order.timeline),                                                 icon: Check         },
+    { status: 'out_for_delivery', label: 'Out for Delivery',  desc: 'Driver is heading to recipient',         time: getTimelineTime('out_for_delivery', order.timeline),                                             icon: Truck         },
+    { status: 'delivered',        label: 'Delivered',         desc: 'Package delivered successfully',         time: order.delivered_at || order.deliveredAt || getTimelineTime('delivered', order.timeline),         icon: Check         },
+    ...(order.status === 'failed'    ? [{ status: 'failed',    label: 'Delivery Failed',  desc: order.failure_reason || order.failureReason || 'Delivery attempt was unsuccessful',     time: getTimelineTime('failed',    order.timeline), icon: AlertTriangle, terminal: true }] : []),
+    ...(order.status === 'cancelled' ? [{ status: 'cancelled', label: 'Order Cancelled',  desc: 'This order has been cancelled',                                                         time: getTimelineTime('cancelled', order.timeline), icon: X,             terminal: true }] : []),
   ] : [];
 
   // -- Render: orders list panel -----------------------------------------------
@@ -267,7 +305,7 @@ const AdminTracking = () => {
 
         {/* Status filter pills */}
         <div className="flex gap-1 flex-wrap">
-          {['all', 'pending', 'in_warehouse', 'out_for_delivery', 'delivered', 'failed'].map(s => (
+          {['all', 'pending', 'confirmed', 'in_warehouse', 'out_for_delivery', 'delivered', 'failed'].map(s => (
             <button key={s} onClick={() => setListStatus(s)}
               className={`px-2 py-0.5 rounded-full text-[10px] font-semibold border transition-all ${
                 listStatus === s
@@ -404,7 +442,7 @@ const AdminTracking = () => {
                 <button onClick={() => navigate('/admin/tracking')}
                   className="lg:hidden text-xs font-semibold text-primary-600">← All orders</button>
                 <h1 className="text-xl font-bold text-gray-900 dark:text-white">Order #{order.id}</h1>
-                <Badge variant={sc.variant}>{order.status?.replace(/_/g, ' ')}</Badge>
+                <Badge variant={sc.variant}>{sc.label}</Badge>
                 {wsConnected
                   ? <span className="flex items-center gap-1 text-xs text-green-600"><Wifi className="w-3 h-3"/>Live</span>
                   : <span className="flex items-center gap-1 text-xs text-gray-400"><WifiOff className="w-3 h-3"/>Offline</span>}
@@ -465,7 +503,7 @@ const AdminTracking = () => {
               {STATUS_STAGES.map((stage, i) => (
                 <div key={stage} className={`flex flex-col items-center ${i <= currentIdx ? 'text-white' : 'text-white/40'}`}>
                   <div className={`w-3.5 h-3.5 rounded-full border-2 ${i <= currentIdx ? 'bg-white border-white' : 'border-white/40'}`}/>
-                  <span className="text-[10px] mt-1 hidden sm:block">{stage.replace(/_/g, ' ')}</span>
+                  <span className="text-[10px] mt-1 hidden sm:block">{{ pending: 'Ordered', confirmed: 'Confirmed', in_warehouse: 'Warehouse', out_for_delivery: 'On the Way', delivered: 'Delivered' }[stage] || stage.replace(/_/g, ' ')}</span>
                 </div>
               ))}
             </div>
@@ -535,6 +573,48 @@ const AdminTracking = () => {
                   })}
                 </div>
               </Card>
+
+              {/* Activity log — shows every order_timeline DB entry */}
+              {order.timeline?.length > 0 && (
+                <Card>
+                  <CardHeader><CardTitle icon={ListOrdered}>Activity Log</CardTitle></CardHeader>
+                  <div className="px-5 pb-5 space-y-1">
+                    {[...order.timeline]
+                      .sort((a, b) => new Date(a.time || a.created_at || 0) - new Date(b.time || b.created_at || 0))
+                      .map((entry, i) => {
+                        const statusColors = {
+                          pending:           'bg-yellow-400',
+                          confirmed:         'bg-blue-400',
+                          in_warehouse:      'bg-indigo-400',
+                          out_for_delivery:  'bg-primary-400',
+                          started_delivery:  'bg-cyan-400',
+                          delivered:         'bg-green-500',
+                          failed:            'bg-red-500',
+                          cancelled:         'bg-gray-400',
+                          created:           'bg-gray-400',
+                        };
+                        const dot = statusColors[entry.status] || 'bg-gray-400';
+                        const t   = entry.time || entry.created_at;
+                        return (
+                          <div key={i} className="flex items-start gap-3 py-2 border-b border-gray-100 dark:border-slate-700/50 last:border-0">
+                            <div className={`mt-1.5 w-2 h-2 rounded-full shrink-0 ${dot}`}/>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center justify-between gap-2">
+                                <p className="text-xs font-semibold text-gray-800 dark:text-gray-200 capitalize">
+                                  {(entry.status || '').replace(/_/g, ' ')}
+                                </p>
+                                {t && <p className="text-[10px] text-gray-400 shrink-0">{fmtTime(t)}</p>}
+                              </div>
+                              {entry.description && (
+                                <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">{entry.description}</p>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                  </div>
+                </Card>
+              )}
 
               {/* Driver location map placeholder */}
               <Card className="overflow-hidden">
@@ -691,7 +771,7 @@ const AdminTracking = () => {
           <div className="space-y-4">
             <div className="p-3 bg-gray-50 dark:bg-slate-700 rounded-xl">
               <p className="text-xs text-gray-500">Current status</p>
-              <Badge variant={sc.variant} className="mt-1">{order.status?.replace(/_/g, ' ')}</Badge>
+              <Badge variant={sc.variant} className="mt-1">{sc.label}</Badge>
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">New Status</label>
@@ -748,8 +828,9 @@ const AdminTracking = () => {
             </div>
             {selectedDriver && (
               <div className="p-3 bg-green-50 dark:bg-green-900/20 rounded-xl border border-green-200 dark:border-green-800">
-                <p className="text-sm text-green-700 dark:text-green-300">
-                  ✓ Driver will be notified and status will change to "Out for Delivery"
+                <p className="text-sm text-green-700 dark:text-green-300 flex items-center gap-1.5">
+                  <Check className="w-4 h-4 shrink-0" />
+                  Driver will be notified and status will change to "Out for Delivery"
                 </p>
               </div>
             )}

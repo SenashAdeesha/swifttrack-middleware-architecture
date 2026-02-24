@@ -1202,6 +1202,100 @@ def update_order_status(order_id):
         return jsonify({'error': 'Failed to update order status'}), 500
 
 # =============================================================================
+# NOTIFICATIONS ENDPOINTS
+# =============================================================================
+
+@app.route('/api/notifications', methods=['GET'])
+@token_required
+def get_notifications():
+    """Get notifications for the authenticated user."""
+    try:
+        user_id = g.current_user.get('user_id')
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, type, title, message, read, data, created_at
+            FROM notifications
+            WHERE user_id = %s
+            ORDER BY created_at DESC
+            LIMIT 100
+        """, (user_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        notifications = []
+        for row in rows:
+            notifications.append({
+                'id': str(row['id']),
+                'type': row['type'],
+                'title': row['title'],
+                'message': row['message'],
+                'read': bool(row['read']),
+                'data': row['data'] or {},
+                'createdAt': row['created_at'].isoformat() if row['created_at'] else None,
+            })
+        return jsonify({'data': notifications}), 200
+    except Exception as e:
+        logger.error("Failed to fetch notifications", error=str(e))
+        return jsonify({'error': 'Failed to fetch notifications'}), 500
+
+@app.route('/api/notifications/read-all', methods=['PUT'])
+@token_required
+def mark_all_notifications_read():
+    """Mark all notifications as read for the authenticated user."""
+    try:
+        user_id = g.current_user.get('user_id')
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE notifications SET read = TRUE WHERE user_id = %s AND read = FALSE",
+            (user_id,)
+        )
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True}), 200
+    except Exception as e:
+        logger.error("Failed to mark all notifications read", error=str(e))
+        return jsonify({'error': 'Failed to mark all notifications read'}), 500
+
+@app.route('/api/notifications/<notification_id>/read', methods=['PUT'])
+@token_required
+def mark_notification_read(notification_id):
+    """Mark a single notification as read."""
+    try:
+        user_id = g.current_user.get('user_id')
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE notifications SET read = TRUE WHERE id = %s AND user_id = %s",
+            (notification_id, user_id)
+        )
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True}), 200
+    except Exception as e:
+        logger.error("Failed to mark notification read", error=str(e))
+        return jsonify({'error': 'Failed to mark notification read'}), 500
+
+@app.route('/api/notifications/<notification_id>', methods=['DELETE'])
+@token_required
+def delete_notification(notification_id):
+    """Delete a notification."""
+    try:
+        user_id = g.current_user.get('user_id')
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "DELETE FROM notifications WHERE id = %s AND user_id = %s",
+            (notification_id, user_id)
+        )
+        conn.commit()
+        conn.close()
+        return jsonify({'success': True}), 200
+    except Exception as e:
+        logger.error("Failed to delete notification", error=str(e))
+        return jsonify({'error': 'Failed to delete notification'}), 500
+
+# =============================================================================
 # ERROR HANDLERS
 # =============================================================================
 

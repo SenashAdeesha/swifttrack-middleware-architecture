@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Package, Search, Filter, Download, Eye, MoreVertical, Calendar, MapPin, User, Truck,
-  Clock, DollarSign, RefreshCw, Copy, Edit2, X, UserCheck, ChevronDown, ArrowUpDown, Wifi, WifiOff
+  Clock, DollarSign, RefreshCw, Copy, Edit2, X, UserCheck, ChevronDown, ArrowUpDown, Wifi, WifiOff, CheckCircle
 } from 'lucide-react';
 import { Card, CardHeader, CardTitle, Badge, Button, Input, Select, Modal, EmptyState, TableSkeleton } from '../../components/common';
 import { ordersAPI, driverAPI, wsService } from '../../services/api';
@@ -35,16 +35,16 @@ const AdminOrders = () => {
       prev && String(prev.id) === String(data.orderId) ? { ...prev, status: data.status } : prev
     );
     const s = data.status;
-    if (s === 'delivered') toast.success(`✅ Order ${data.orderId} delivered!`);
-    else if (s === 'failed') toast.error(`❌ Order ${data.orderId} delivery failed`);
-    else if (s === 'cancelled') toast(`Order ${data.orderId} cancelled`, { icon: '🚫' });
-    else if (s === 'out_for_delivery') toast(`Order ${data.orderId} out for delivery`, { icon: '🚚' });
+    if (s === 'delivered') toast.success(`Order ${data.orderId} delivered!`);
+    else if (s === 'failed') toast.error(`Order ${data.orderId} delivery failed`);
+    else if (s === 'cancelled') toast(`Order ${data.orderId} cancelled`);
+    else if (s === 'out_for_delivery') toast(`Order ${data.orderId} out for delivery`);
     else toast.success(`Order ${data.orderId}: ${s.replace(/_/g, ' ')}`);
   }, []);
 
   // Handle new order notifications
   const handleNewOrder = useCallback((data) => {
-    toast.success(`🆕 New order received: ${data.orderId}`);
+    toast.success(`New order received: ${data.orderId}`);
     fetchData();
   }, []);
 
@@ -56,7 +56,7 @@ const AdminOrders = () => {
     setSelectedOrder(prev =>
       prev && String(prev.id) === String(data.orderId) ? { ...prev, status: 'delivered' } : prev
     );
-    toast.success(`✅ Order ${data.orderId} has been delivered!`);
+    toast.success(`Order ${data.orderId} has been delivered!`);
   }, []);
 
   // Set up WebSocket connection
@@ -167,10 +167,11 @@ const AdminOrders = () => {
 
   const copyOrderId = (id) => { navigator.clipboard.writeText(id); toast.success('Order ID copied!'); };
 
-  const getStatusColor = (status) => ({ pending: 'warning', picked_up: 'info', in_transit: 'primary', out_for_delivery: 'primary', in_warehouse: 'info', delivered: 'success', cancelled: 'danger', failed: 'danger' }[status] || 'default');
+  const getStatusColor = (status) => ({ pending: 'warning', confirmed: 'warning', picked_up: 'info', in_transit: 'primary', out_for_delivery: 'primary', in_warehouse: 'warning', delivered: 'success', cancelled: 'danger', failed: 'danger' }[status] || 'default');
+  const getStatusLabel = (status) => ({ confirmed: 'Pending', in_warehouse: 'Pending' }[status] || status?.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()));
 
   const statusOptions = [
-    { value: 'all', label: 'All Status' }, { value: 'pending', label: 'Pending' }, { value: 'in_warehouse', label: 'In Warehouse' },
+    { value: 'all', label: 'All Status' }, { value: 'pending', label: 'Pending' }, { value: 'in_warehouse', label: 'Pending (In Warehouse)' },
     { value: 'out_for_delivery', label: 'Out for Delivery' }, { value: 'delivered', label: 'Delivered' },
     { value: 'failed', label: 'Failed' }, { value: 'cancelled', label: 'Cancelled' },
   ];
@@ -308,7 +309,7 @@ const AdminOrders = () => {
                       )}
                     </td>
                     <td className="py-4 px-6 text-gray-600 dark:text-gray-400 max-w-xs truncate">{order.deliveryAddress || order.destination || 'N/A'}</td>
-                    <td className="py-4 px-6"><Badge variant={getStatusColor(order.status)}>{order.status?.replace(/_/g, ' ')}</Badge></td>
+                    <td className="py-4 px-6"><Badge variant={getStatusColor(order.status)}>{getStatusLabel(order.status)}</Badge></td>
                     <td className="py-4 px-6 font-semibold text-gray-900 dark:text-white">${(order.amount || 0).toFixed(2)}</td>
                     <td className="py-4 px-6">
                       <div className="flex items-center justify-end gap-1">
@@ -343,7 +344,7 @@ const AdminOrders = () => {
                 <span className="font-mono text-lg font-bold text-primary-600">{selectedOrder.id}</span>
                 <p className="text-sm text-gray-500 mt-1">Created: {new Date(selectedOrder.createdAt || Date.now()).toLocaleDateString()}</p>
               </div>
-              <Badge variant={getStatusColor(selectedOrder.status)} size="lg">{selectedOrder.status?.replace(/_/g, ' ')}</Badge>
+              <Badge variant={getStatusColor(selectedOrder.status)} size="lg">{getStatusLabel(selectedOrder.status)}</Badge>
             </div>
             <div className="grid grid-cols-2 gap-4">
               {[{ icon: User, label: 'Client', value: selectedOrder.clientName || selectedOrder.client }, { icon: Truck, label: 'Driver', value: selectedOrder.driverName || 'Unassigned' },
@@ -392,9 +393,10 @@ const AdminOrders = () => {
             )}
           </div>
           {selectedDriver && (
-            <div className="p-3 bg-green-50 dark:bg-green-900/20 rounded-xl border border-green-200 dark:border-green-800">
-              <p className="text-sm text-green-700 dark:text-green-300">
-                ✓ Driver will be notified immediately and order status will change to "Out for Delivery"
+              <div className="p-3 bg-green-50 dark:bg-green-900/20 rounded-xl border border-green-200 dark:border-green-800">
+              <p className="text-sm text-green-700 dark:text-green-300 flex items-center gap-1.5">
+                <CheckCircle className="w-4 h-4 shrink-0" />
+                Driver will be notified immediately and order status will change to "Out for Delivery"
               </p>
             </div>
           )}

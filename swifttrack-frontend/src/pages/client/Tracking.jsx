@@ -13,8 +13,8 @@ import toast from 'react-hot-toast';
 // -- Status helpers -----------------------------------------------------------
 const STATUS_CFG = {
   pending:          { label: 'Pending',          variant: 'warning',   dot: 'bg-yellow-400',  banner: 'from-yellow-400 to-orange-500' },
-  confirmed:        { label: 'Confirmed',         variant: 'info',      dot: 'bg-blue-400',    banner: 'from-blue-500 to-indigo-600' },
-  in_warehouse:     { label: 'In Warehouse',      variant: 'secondary', dot: 'bg-purple-400',  banner: 'from-purple-500 to-indigo-600' },
+  confirmed:        { label: 'Pending',           variant: 'warning',   dot: 'bg-amber-400',   banner: 'from-amber-500 to-orange-500' },
+  in_warehouse:     { label: 'Pending',           variant: 'warning',   dot: 'bg-amber-400',   banner: 'from-amber-500 to-orange-500' },
   out_for_delivery: { label: 'Out for Delivery',  variant: 'primary',   dot: 'bg-primary-400', banner: 'from-blue-500 to-indigo-600' },
   delivered:        { label: 'Delivered',         variant: 'success',   dot: 'bg-green-500',   banner: 'from-green-500 to-emerald-600' },
   failed:           { label: 'Failed',            variant: 'danger',    dot: 'bg-red-500',     banner: 'from-red-500 to-rose-600' },
@@ -25,12 +25,19 @@ const getSC = (s) => STATUS_CFG[s] ?? { label: s?.replace(/_/g, ' ') ?? '—', v
 const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
 const fmtTime = (iso) => iso ? new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : null;
 
-const STATUS_STAGES = ['pending', 'confirmed', 'in_warehouse', 'out_for_delivery', 'delivered'];
+const STATUS_STAGES     = ['pending', 'in_warehouse', 'out_for_delivery', 'delivered'];
 const TERMINAL_STATUSES = ['failed', 'cancelled'];
+const DISPLAY_STATUS    = (s) => s === 'confirmed' ? 'in_warehouse' : s;
 const getStatusProgress = (s) => {
-  if (TERMINAL_STATUSES.includes(s)) return 0;
-  const i = STATUS_STAGES.indexOf(s);
+  if (s === 'failed')    return 75;
+  if (s === 'cancelled') return 25;
+  const i = STATUS_STAGES.indexOf(DISPLAY_STATUS(s));
   return i >= 0 ? ((i + 1) / STATUS_STAGES.length) * 100 : 0;
+};
+const getTimelineTime = (status, tl) => {
+  if (!tl?.length) return null;
+  const entries = tl.filter(e => e.status === status);
+  return entries.length ? entries[entries.length - 1].time : null;
 };
 
 const Tracking = () => {
@@ -81,15 +88,23 @@ const Tracking = () => {
 
   // -- Real-time WS ------------------------------------------------------------
   const handleStatusUpdate = useCallback((data) => {
-    const id = String(data.orderId || data.order_id);
+    const id     = String(data.orderId || data.order_id);
     const status = data.status;
     setOrders(prev => prev.map(o => String(o.id) === id ? { ...o, status } : o));
     if (String(orderId) === id) {
-      setOrder(prev => prev ? { ...prev, status, ...data } : prev);
+      setOrder(prev => {
+        if (!prev) return prev;
+        const now        = new Date().toISOString();
+        const existing   = prev.timeline || [];
+        const alreadyHas = existing.some(e => e.status === status);
+        return {
+          ...prev, ...data, status,
+          timeline: alreadyHas ? existing : [...existing, { status, time: now, description: `Status: ${status}` }],
+        };
+      });
       if (status === 'delivered')             toast.success('\uD83C\uDF89 Your package has been delivered!');
       else if (status === 'failed')           toast.error('Delivery attempt failed. Our team will contact you.');
       else if (status === 'out_for_delivery') toast('\uD83D\uDE9A Your package is out for delivery!', { icon: '\uD83D\uDCE6' });
-      else                                    toast.success(`Status updated: ${status.replace(/_/g, ' ')}`);
     }
   }, [orderId]);
 
@@ -102,8 +117,30 @@ const Tracking = () => {
     const id = String(data.orderId || data.order_id);
     setOrders(prev => prev.map(o => String(o.id) === id ? { ...o, status: 'delivered' } : o));
     if (String(orderId) === id) {
-      setOrder(prev => prev ? { ...prev, status: 'delivered', deliveredTime: new Date().toISOString() } : prev);
+      setOrder(prev => {
+        if (!prev) return prev;
+        const now        = new Date().toISOString();
+        const existing   = prev.timeline || [];
+        const alreadyHas = existing.some(e => e.status === 'delivered');
+        return {
+          ...prev, status: 'delivered', delivered_at: now, deliveredAt: now,
+          timeline: alreadyHas ? existing : [...existing, { status: 'delivered', time: now, description: 'Package delivered successfully' }],
+        };
+      });
       toast.success('\uD83C\uDF89 Your package has been delivered!');
+    }
+  }, [orderId]);
+
+  const handleTimelineUpdate = useCallback((data) => {
+    const id    = String(data.orderId || data.order_id);
+    const entry = data.entry;
+    if (String(orderId) === id && entry) {
+      setOrder(prev => {
+        if (!prev) return prev;
+        const existing   = prev.timeline || [];
+        const alreadyHas = existing.some(e => e.status === entry.status);
+        return alreadyHas ? prev : { ...prev, timeline: [...existing, entry] };
+      });
     }
   }, [orderId]);
 
@@ -114,8 +151,9 @@ const Tracking = () => {
     const u1 = wsService.on('order_status_update', handleStatusUpdate);
     const u2 = wsService.on('driver_location', handleDriverLocation);
     const u3 = wsService.on('delivery_completed', handleDeliveryCompleted);
-    return () => { if (orderId) wsService.unsubscribeFromOrder(orderId); u1(); u2(); u3(); };
-  }, [orderId, handleStatusUpdate, handleDriverLocation, handleDeliveryCompleted]);
+    const u4 = wsService.on('timeline_update', handleTimelineUpdate);
+    return () => { if (orderId) wsService.unsubscribeFromOrder(orderId); u1(); u2(); u3(); u4(); };
+  }, [orderId, handleStatusUpdate, handleDriverLocation, handleDeliveryCompleted, handleTimelineUpdate]);
 
   // -- Fetch order detail when orderId changes --------------------------------
   const fetchDetail = useCallback(async (silent = false) => {
@@ -171,13 +209,12 @@ const Tracking = () => {
     .sort((a, b) => new Date(b.created_at || b.createdAt || 0) - new Date(a.created_at || a.createdAt || 0));
 
   const timeline = order ? [
-    { status: 'pending',          label: 'Order Placed',      desc: 'Your order has been received',      time: order.createdAt     || order.created_at,     icon: Package       },
-    { status: 'confirmed',        label: 'Confirmed',         desc: 'Order confirmed by warehouse',      time: order.confirmedAt   || order.confirmed_at,   icon: Check         },
-    { status: 'in_warehouse',     label: 'At Warehouse',      desc: 'Package is being processed',        time: order.warehouseTime || order.warehouse_time, icon: Check         },
-    { status: 'out_for_delivery', label: 'Out for Delivery',  desc: 'Driver is heading to you',          time: order.dispatchTime  || order.dispatch_time,  icon: Truck         },
-    { status: 'delivered',        label: 'Delivered',         desc: 'Package delivered successfully',    time: order.deliveredTime || order.delivered_time, icon: Check         },
-    ...(order.status === 'failed'    ? [{ status: 'failed',    label: 'Delivery Failed',  desc: 'Delivery attempt was unsuccessful',  time: order.failedAt    || order.failed_at,    icon: AlertTriangle, terminal: true }] : []),
-    ...(order.status === 'cancelled' ? [{ status: 'cancelled', label: 'Order Cancelled',  desc: 'This order has been cancelled',      time: order.cancelledAt || order.cancelled_at, icon: X,             terminal: true }] : []),
+    { status: 'pending',          label: 'Order Placed',      desc: 'Your order has been received',                  time: order.created_at || order.createdAt,                                                              icon: Package       },
+    { status: 'in_warehouse',     label: 'Processing',        desc: 'Order confirmed & being prepared at warehouse', time: getTimelineTime('in_warehouse', order.timeline) || getTimelineTime('confirmed', order.timeline),   icon: Check         },
+    { status: 'out_for_delivery', label: 'Out for Delivery',  desc: 'Your driver is heading to your location',       time: getTimelineTime('out_for_delivery', order.timeline),                                             icon: Truck         },
+    { status: 'delivered',        label: 'Delivered',         desc: 'Package delivered successfully',                time: order.delivered_at || order.deliveredAt || getTimelineTime('delivered', order.timeline),         icon: Check         },
+    ...(order.status === 'failed'    ? [{ status: 'failed',    label: 'Delivery Failed',  desc: order.failure_reason || order.failureReason || 'Delivery attempt was unsuccessful',      time: getTimelineTime('failed',    order.timeline), icon: AlertTriangle, terminal: true }] : []),
+    ...(order.status === 'cancelled' ? [{ status: 'cancelled', label: 'Order Cancelled',  desc: 'This order has been cancelled',                                                          time: getTimelineTime('cancelled', order.timeline), icon: X,             terminal: true }] : []),
   ] : [];
 
   const supportIssues = ['Delivery delay','Wrong address','Package damaged','Driver issue','Change delivery time','Other'];
@@ -306,7 +343,7 @@ const Tracking = () => {
       </div>
     );
 
-    const currentIndex = STATUS_STAGES.indexOf(order.status);
+    const currentIndex = STATUS_STAGES.indexOf(DISPLAY_STATUS(order.status));
     const sc = getSC(order.status);
 
     return (
@@ -319,7 +356,7 @@ const Tracking = () => {
               <div className="flex items-center gap-2 flex-wrap">
                 <button onClick={() => navigate('/client/tracking')} className="lg:hidden text-xs font-semibold text-primary-600">\u2190 All orders</button>
                 <h1 className="text-xl font-bold text-gray-900 dark:text-white">Order #{order.id}</h1>
-                <Badge variant={sc.variant}>{order.status?.replace(/_/g,' ')}</Badge>
+                <Badge variant={sc.variant}>{sc.label}</Badge>
                 {wsConnected
                   ? <span className="flex items-center gap-1 text-xs text-green-600"><Wifi className="w-3 h-3"/>Live</span>
                   : <span className="flex items-center gap-1 text-xs text-gray-400"><WifiOff className="w-3 h-3"/>Offline</span>}
@@ -360,7 +397,7 @@ const Tracking = () => {
               {STATUS_STAGES.map((stage,i)=>(
                 <div key={stage} className={`flex flex-col items-center ${i<=currentIndex?'text-white':'text-white/40'}`}>
                   <div className={`w-3.5 h-3.5 rounded-full border-2 ${i<=currentIndex?'bg-white border-white':'border-white/40'}`}/>
-                  <span className="text-[10px] mt-1 hidden sm:block">{stage.replace(/_/g,' ')}</span>
+                  <span className="text-[10px] mt-1 hidden sm:block">{{ pending: 'Ordered', in_warehouse: 'Processing', out_for_delivery: 'On the Way', delivered: 'Delivered' }[stage] || stage.replace(/_/g, ' ')}</span>
                 </div>
               ))}
             </div>
@@ -373,7 +410,8 @@ const Tracking = () => {
                 <CardHeader><CardTitle icon={Clock}>Tracking Timeline</CardTitle></CardHeader>
                 <div className="p-5 space-y-0">
                   {timeline.map((step, i) => {
-                    const currentIdx = STATUS_STAGES.indexOf(order.status);
+                    const displaySt  = DISPLAY_STATUS(order.status);
+                    const currentIdx = STATUS_STAGES.indexOf(displaySt);
                     const stepIdx    = STATUS_STAGES.indexOf(step.status);
                     // Complete if: step index ≤ current index (normal flow)
                     // OR step has a timestamp (handles failed/cancelled where currentIdx = -1)
@@ -382,7 +420,8 @@ const Tracking = () => {
                       : currentIdx >= 0
                         ? stepIdx <= currentIdx
                         : !!step.time;
-                    const isCurrent  = !step.terminal && order.status === step.status;
+                    const isCurrent  = !step.terminal && (order.status === step.status ||
+                      (step.status === 'in_warehouse' && order.status === 'confirmed'));
                     const isTerminal = !!step.terminal;
                     const isLast     = i === timeline.length - 1;
                     return (

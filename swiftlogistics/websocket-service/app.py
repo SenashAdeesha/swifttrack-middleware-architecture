@@ -478,24 +478,25 @@ def broadcast_driver_assigned(order_id, driver_id, client_id, data=None):
     print(f"Broadcasted driver assignment: order {order_id} -> driver {driver_id}")
 
 
-def broadcast_delivery_completed(order_id, driver_id, client_id, data=None):
+def broadcast_delivery_completed(order_id, driver_id, client_user_id=None, data=None):
     """Broadcast delivery completion"""
     event_data = {
         'event': 'delivery_completed',
         'order_id': order_id,
+        'orderId': order_id,
         'driver_id': driver_id,
         'data': data or {},
         'timestamp': datetime.utcnow().isoformat()
     }
-    
+
     # Emit to all relevant parties
     socketio.emit('delivery_completed', event_data, room=f'order_{order_id}')
     socketio.emit('delivery_completed', event_data, room='admin_room')
-    
-    if client_id in user_connections:
-        for sid in user_connections[client_id]:
-            socketio.emit('delivery_completed', event_data, room=sid)
-    
+
+    # Emit directly to client's user room
+    if client_user_id:
+        socketio.emit('delivery_completed', event_data, room=f'user_{client_user_id}')
+
     print(f"Broadcasted delivery completion: {order_id}")
 
 
@@ -505,6 +506,23 @@ def broadcast_notification(user_id, notification_data):
         for sid in user_connections[user_id]:
             socketio.emit('notification', notification_data, room=sid)
         print(f"Sent notification to user {user_id}")
+
+
+def broadcast_timeline_update(order_id, entry, client_user_id=None, data=None):
+    """Broadcast a new order_timeline entry to tracking pages in real-time."""
+    event_data = {
+        'event': 'timeline_update',
+        'order_id': order_id,
+        'orderId': order_id,
+        'entry': entry,
+        'data': data or {},
+        'timestamp': datetime.utcnow().isoformat()
+    }
+    socketio.emit('timeline_update', event_data, room=f'order_{order_id}')
+    socketio.emit('timeline_update', event_data, room='admin_room')
+    if client_user_id:
+        socketio.emit('timeline_update', event_data, room=f'user_{client_user_id}')
+    print(f"Broadcasted timeline update for order {order_id}: {entry.get('status')}")
 
 
 # ============ RabbitMQ Consumer ============
@@ -558,9 +576,15 @@ def process_rabbitmq_message(ch, method, properties, body):
             broadcast_delivery_completed(
                 data.get('order_id') or message.get('order_id'),
                 data.get('driver_id') or message.get('driver_id'),
-                data.get('client_id') or message.get('client_id'),
+                data.get('client_user_id') or message.get('client_user_id'),
                 data
             )
+
+        elif event_type == 'timeline_update':
+            order_id       = message.get('order_id') or data.get('order_id')
+            entry          = message.get('entry') or data.get('entry') or {}
+            client_user_id = data.get('client_user_id') or (message.get('data') or {}).get('client_user_id')
+            broadcast_timeline_update(order_id, entry, client_user_id, data)
 
         elif event_type == 'notification':
             broadcast_notification(
@@ -699,12 +723,19 @@ def api_broadcast():
         broadcast_delivery_completed(
             payload.get('order_id'),
             payload.get('driver_id'),
-            payload.get('client_id'),
+            payload.get('client_user_id'),
             payload
         )
     elif event_type == 'notification':
         broadcast_notification(
             payload.get('user_id'),
+            payload
+        )
+    elif event_type == 'timeline_update':
+        broadcast_timeline_update(
+            payload.get('order_id'),
+            payload.get('entry', {}),
+            payload.get('client_user_id'),
             payload
         )
     else:
