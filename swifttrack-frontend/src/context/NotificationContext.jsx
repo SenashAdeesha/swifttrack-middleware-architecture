@@ -26,6 +26,21 @@ const STATUS_META = {
   in_warehouse:     { title: 'In Warehouse',      type: 'delivery' },
 };
 
+// CMS Service event meta
+const CMS_META = {
+  cms_validation_started: { title: 'CMS: Validating Customer', icon: '🔍', color: 'blue' },
+  cms_validation_success: { title: 'CMS: Customer Validated', icon: '✅', color: 'green' },
+  cms_validation_skipped: { title: 'CMS: Validation Skipped', icon: '⚠️', color: 'yellow' },
+};
+
+// ROS Service event meta
+const ROS_META = {
+  ros_optimization_started: { title: 'ROS: Calculating Route', icon: '📍', color: 'blue' },
+  ros_optimization_success: { title: 'ROS: Route Optimized', icon: '✅', color: 'green' },
+  ros_optimization_skipped: { title: 'ROS: Route Skipped', icon: '⚠️', color: 'yellow' },
+  ros_optimization_error:   { title: 'ROS: Route Error', icon: '❌', color: 'red' },
+};
+
 function makeStatusNotif(orderId, status) {
   const meta = STATUS_META[status];
   if (!meta) return null;
@@ -99,8 +114,8 @@ export function NotificationProvider({ children }) {
     wsSubscribed.current = true;
 
     wsService.connect();
-    const token = localStorage.getItem('swifttrack_token');
-    if (token) wsService.authenticate(token);
+    // Authenticate with user ID and role
+    wsService.authenticate(user.id, user.role);
 
     const onConnect    = () => setIsConnected(true);
     const onDisconnect = () => setIsConnected(false);
@@ -192,6 +207,128 @@ export function NotificationProvider({ children }) {
       toast.success(notif.message);
     });
 
+    // New order created (admin side)
+    const unsubNewOrder = wsService.on('new_order', (data) => {
+      const orderId = String(data.orderId || data.order_id || '');
+      const clientName = data.clientName || data.client_name || 'A customer';
+      const notif = {
+        id: `ws-neworder-${orderId}-${Date.now()}`,
+        type: 'delivery',
+        title: 'New Order Received',
+        message: `New order #${orderId} from ${clientName}`,
+        read: false,
+        data: { order_id: orderId, delivery: data.deliveryAddress },
+        createdAt: new Date().toISOString(),
+        time: 'Just now',
+        fromWs: true,
+      };
+      addNotif(notif);
+      toast.success(notif.message);
+    });
+
+    // Middleware/pipeline updates
+    const unsubMiddleware = wsService.on('middleware_update', (data) => {
+      const orderId = String(data.orderId || data.order_id || '');
+      const stage = data.stage || data.status || 'processing';
+      const formattedStage = stage.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+      const notif = {
+        id: `ws-middleware-${orderId}-${stage}-${Date.now()}`,
+        type: 'system',
+        title: 'Order Update',
+        message: `Order #${orderId}: ${formattedStage}`,
+        read: false,
+        data: { order_id: orderId, stage },
+        createdAt: new Date().toISOString(),
+        time: 'Just now',
+        fromWs: true,
+      };
+      addNotif(notif);
+    });
+
+    // ============ CMS Service (SOAP/XML) Updates ============
+    const unsubCms = wsService.on('cms_update', (data) => {
+      const orderId = String(data.orderId || data.order_id || '');
+      const eventType = data.type || 'cms_update';
+      const meta = CMS_META[eventType] || { title: 'CMS Update', icon: '📄', color: 'blue' };
+      const notif = {
+        id: `ws-cms-${orderId}-${eventType}-${Date.now()}`,
+        type: 'system',
+        title: `${meta.icon} ${meta.title}`,
+        message: data.message || `CMS Service processing order #${orderId}`,
+        read: false,
+        data: { 
+          order_id: orderId, 
+          service: 'CMS', 
+          protocol: 'SOAP/XML',
+          stage: data.stage,
+          eventType 
+        },
+        createdAt: new Date().toISOString(),
+        time: 'Just now',
+        fromWs: true,
+        serviceUpdate: true,
+        color: meta.color,
+      };
+      addNotif(notif);
+      // Show toast for CMS updates
+      if (eventType === 'cms_validation_success') {
+        toast.success(notif.message);
+      } else {
+        toast(notif.message);
+      }
+    });
+
+    // ============ ROS Service (REST/JSON) Updates ============
+    const unsubRos = wsService.on('ros_update', (data) => {
+      const orderId = String(data.orderId || data.order_id || '');
+      const eventType = data.type || 'ros_update';
+      const meta = ROS_META[eventType] || { title: 'ROS Update', icon: '🗺️', color: 'blue' };
+      
+      // Build detailed message for route optimization
+      let message = data.message || `ROS Service processing order #${orderId}`;
+      if (eventType === 'ros_optimization_success' && data.distance_km) {
+        message = `Route optimized: ${data.distance_km}km, ~${data.estimated_duration || 0} mins`;
+      }
+      
+      const notif = {
+        id: `ws-ros-${orderId}-${eventType}-${Date.now()}`,
+        type: 'system',
+        title: `${meta.icon} ${meta.title}`,
+        message,
+        read: false,
+        data: { 
+          order_id: orderId, 
+          service: 'ROS', 
+          protocol: 'REST/JSON',
+          stage: data.stage,
+          route_id: data.route_id,
+          distance_km: data.distance_km,
+          estimated_duration: data.estimated_duration,
+          eventType 
+        },
+        createdAt: new Date().toISOString(),
+        time: 'Just now',
+        fromWs: true,
+        serviceUpdate: true,
+        color: meta.color,
+      };
+      addNotif(notif);
+      // Show toast for ROS updates
+      if (eventType === 'ros_optimization_success') {
+        toast.success(notif.message);
+      } else if (eventType === 'ros_optimization_error') {
+        toast.error(notif.message);
+      } else {
+        toast(notif.message);
+      }
+    });
+
+    // Driver location updates (for live tracking notifications)
+    const unsubLocation = wsService.on('driver_location', (data) => {
+      // Only create notification for significant location updates (optional)
+      // This is mainly for dashboard visual updates, not notification list
+    });
+
     return () => {
       wsSubscribed.current = false;
       unsubNotif();
@@ -199,6 +336,11 @@ export function NotificationProvider({ children }) {
       unsubDriver();
       unsubAssignment();
       unsubDelivered();
+      unsubNewOrder();
+      unsubMiddleware();
+      unsubCms();
+      unsubRos();
+      unsubLocation();
       wsService.socket?.off('connect', onConnect);
       wsService.socket?.off('disconnect', onDisconnect);
     };
