@@ -301,6 +301,262 @@ def notify_driver_assignment(order_id, driver_id):
 # MESSAGE HANDLERS
 # =============================================================================
 
+def get_all_admin_user_ids():
+    """Get all admin user IDs for system-wide notifications."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM users WHERE role = 'admin'")
+        admins = cursor.fetchall()
+        conn.close()
+        return [admin['id'] for admin in admins]
+    except Exception as e:
+        logger.error("Failed to get admin users", error=str(e))
+        return []
+
+def notify_admins(title, message, notification_type='system', data=None):
+    """Send notification to all admins."""
+    admin_ids = get_all_admin_user_ids()
+    for admin_id in admin_ids:
+        send_push_notification(admin_id, title, message, data)
+    logger.info("Notified all admins", count=len(admin_ids), title=title)
+
+def handle_new_order(data):
+    """Handle new order created notification."""
+    order_id = data.get('order_id')
+    client_id = data.get('client_id')
+    client_user_id = data.get('client_user_id')
+    pickup = data.get('pickup_address', 'Unknown')
+    delivery = data.get('delivery_address', 'Unknown')
+    
+    # Notify client
+    if client_user_id:
+        send_push_notification(
+            client_user_id,
+            "Order Created",
+            f"Your order #{order_id} has been created and is being processed",
+            {'order_id': order_id, 'status': 'pending'}
+        )
+    
+    # Notify all admins
+    notify_admins(
+        "New Order Received",
+        f"Order #{order_id} from {pickup} to {delivery}",
+        'delivery',
+        {'order_id': order_id, 'status': 'pending'}
+    )
+
+def handle_order_status_change(data):
+    """Handle order status change notification for all actors."""
+    order_id = data.get('order_id')
+    status = data.get('status')
+    
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Get order details with client and driver info
+        cursor.execute("""
+            SELECT o.id, o.status, o.pickup_address, o.delivery_address,
+                   c.user_id as client_user_id, u1.name as client_name,
+                   d.user_id as driver_user_id, u2.name as driver_name
+            FROM orders o
+            JOIN clients c ON o.client_id = c.id
+            JOIN users u1 ON c.user_id = u1.id
+            LEFT JOIN drivers d ON o.driver_id = d.id
+            LEFT JOIN users u2 ON d.user_id = u2.id
+            WHERE o.id = %s
+        """, (order_id,))
+        order = cursor.fetchone()
+        conn.close()
+        
+        if not order:
+            return
+        
+        client_user_id = order['client_user_id']
+        driver_user_id = order.get('driver_user_id')
+        
+        # Status messages for each actor
+        status_messages = {
+            'pending': {
+                'client': 'Your order is pending confirmation',
+                'admin': f"Order #{order_id} is pending",
+                'driver': None
+            },
+            'confirmed': {
+                'client': 'Your order has been confirmed',
+                'admin': f"Order #{order_id} confirmed",
+                'driver': None
+            },
+            'in_warehouse': {
+                'client': 'Your package has arrived at the warehouse',
+                'admin': f"Order #{order_id} received at warehouse",
+                'driver': f"Order #{order_id} is ready for pickup"
+            },
+            'out_for_delivery': {
+                'client': 'Your order is out for delivery',
+                'admin': f"Order #{order_id} out for delivery",
+                'driver': f"Order #{order_id} dispatched"
+            },
+            'delivered': {
+                'client': 'Your order has been delivered successfully!',
+                'admin': f"Order #{order_id} delivered",
+                'driver': f"Order #{order_id} delivery confirmed"
+            },
+            'failed': {
+                'client': 'Delivery attempt failed. We will retry soon.',
+                'admin': f"Order #{order_id} delivery failed",
+                'driver': f"Delivery failed for order #{order_id}"
+            },
+            'cancelled': {
+                'client': 'Your order has been cancelled',
+                'admin': f"Order #{order_id} cancelled",
+                'driver': f"Order #{order_id} has been cancelled"
+            }
+        }
+        
+        msgs = status_messages.get(status, {
+            'client': f'Order status: {status}',
+            'admin': f"Order #{order_id}: {status}",
+            'driver': f"Order #{order_id}: {status}"
+        })
+        
+        status_titles = {
+            'pending': 'Order Pending',
+            'confirmed': 'Order Confirmed',
+            'in_warehouse': 'Package at Warehouse',
+            'out_for_delivery': 'Out for Delivery',
+            'delivered': 'Order Delivered',
+            'failed': 'Delivery Failed',
+            'cancelled': 'Order Cancelled'
+        }
+        title = status_titles.get(status, 'Order Update')
+        
+        # Notify client
+        if client_user_id and msgs.get('client'):
+            send_push_notification(
+                client_user_id, title, msgs['client'],
+                {'order_id': order_id, 'status': status}
+            )
+        
+        # Notify driver if assigned
+        if driver_user_id and msgs.get('driver'):
+            send_push_notification(
+                driver_user_id, title, msgs['driver'],
+                {'order_id': order_id, 'status': status}
+            )
+        
+        # Notify admins
+        notify_admins(title, msgs['admin'], 'delivery', {'order_id': order_id, 'status': status})
+        
+    except Exception as e:
+        logger.error("Failed to handle order status change", error=str(e))
+
+def handle_driver_assigned(data):
+    """Handle driver assignment notification for all actors."""
+    order_id = data.get('order_id')
+    driver_id = data.get('driver_id')
+    driver_name = data.get('driver_name', 'A driver')
+    
+    # Use direct user IDs if available, otherwise query
+    client_user_id = data.get('client_user_id')
+    driver_user_id = data.get('driver_user_id')
+    pickup = data.get('pickup_address', '')
+    delivery = data.get('delivery_address', '')
+    
+    try:
+        # If user IDs not in data, query them
+        if not client_user_id or not driver_user_id:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            
+            # Get order and driver details
+            cursor.execute("""
+                SELECT o.id, o.pickup_address, o.delivery_address,
+                       c.user_id as client_user_id,
+                       d.user_id as driver_user_id, u.name as driver_name
+                FROM orders o
+                JOIN clients c ON o.client_id = c.id
+                LEFT JOIN drivers d ON d.id::text = %s OR d.user_id::text = %s
+                LEFT JOIN users u ON d.user_id = u.id
+                WHERE o.id = %s
+            """, (driver_id, driver_id, order_id))
+            result = cursor.fetchone()
+            conn.close()
+            
+            if not result:
+                logger.warning("Driver assignment: order/driver not found", order_id=order_id)
+                return
+            
+            client_user_id = client_user_id or result['client_user_id']
+            driver_user_id = driver_user_id or result.get('driver_user_id')
+            driver_name = result.get('driver_name') or driver_name
+            pickup = pickup or result['pickup_address']
+            delivery = delivery or result['delivery_address']
+        
+        # Notify client
+        if client_user_id:
+            send_push_notification(
+                client_user_id,
+                "Driver Assigned",
+                f"{driver_name} has been assigned to deliver your order",
+                {'order_id': order_id, 'driver_id': str(driver_id)}
+            )
+        
+        # Notify driver
+        if driver_user_id:
+            send_push_notification(
+                driver_user_id,
+                "New Delivery Assignment",
+                f"New delivery: {pickup} → {delivery}",
+                {'order_id': order_id}
+            )
+        
+        # Notify admins
+        notify_admins(
+            "Driver Assigned",
+            f"{driver_name} assigned to order #{order_id}",
+            'delivery',
+            {'order_id': order_id, 'driver_id': str(driver_id)}
+        )
+        
+    except Exception as e:
+        logger.error("Failed to handle driver assignment", error=str(e))
+
+def handle_delivery_proof_uploaded(data):
+    """Handle delivery proof uploaded notification."""
+    order_id = data.get('order_id')
+    
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT c.user_id as client_user_id
+            FROM orders o
+            JOIN clients c ON o.client_id = c.id
+            WHERE o.id = %s
+        """, (order_id,))
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result:
+            send_push_notification(
+                result['client_user_id'],
+                "Delivery Proof Available",
+                f"Proof of delivery for order #{order_id} is now available",
+                {'order_id': order_id}
+            )
+        
+        notify_admins(
+            "Delivery Proof Uploaded",
+            f"Delivery proof uploaded for order #{order_id}",
+            'delivery',
+            {'order_id': order_id}
+        )
+        
+    except Exception as e:
+        logger.error("Failed to handle delivery proof", error=str(e))
+
 def handle_notification_message(ch, method, properties, body):
     """
     =========================================================================
@@ -321,25 +577,73 @@ def handle_notification_message(ch, method, properties, body):
         user_id = data.get('user_id')
         driver_id = data.get('driver_id')
         
-        if notification_type == 'order_status_change':
-            notify_order_status_change(order_id, status, message)
+        # Handle different notification types
+        if notification_type in ['order_created', 'new_order']:
+            handle_new_order(data)
             
-        elif notification_type == 'driver_assigned':
-            notify_driver_assignment(order_id, driver_id)
+        elif notification_type in ['order_status_change', 'order_status_update', 'realtime.order_status']:
+            data['order_id'] = order_id
+            data['status'] = status
+            handle_order_status_change(data)
             
-        elif notification_type == 'package_received':
-            notify_order_status_change(order_id, 'in_warehouse', message)
+        elif notification_type in ['driver_assigned', 'realtime.driver_assigned']:
+            handle_driver_assigned(data)
             
-        elif notification_type == 'delivery_completed':
-            notify_order_status_change(order_id, 'delivered', 
-                                      'Your package has been delivered!')
+        elif notification_type == 'realtime.new_assignment':
+            # Driver received new assignment
+            if driver_id:
+                send_push_notification(
+                    driver_id,
+                    "New Delivery Assignment",
+                    f"You have a new delivery assignment for order #{order_id}",
+                    {'order_id': order_id}
+                )
             
-        elif notification_type == 'custom':
+        elif notification_type in ['package_received', 'realtime.package_received']:
+            data['status'] = 'in_warehouse'
+            handle_order_status_change(data)
+            
+        elif notification_type in ['delivery_completed', 'realtime.delivery_completed']:
+            data['status'] = 'delivered'
+            handle_order_status_change(data)
+            
+        elif notification_type == 'realtime.proof_uploaded':
+            handle_delivery_proof_uploaded(data)
+            
+        elif notification_type in ['notification', 'custom']:
+            # Direct user notification - also notify admins for important events
+            title = data.get('title', 'Notification')
             if user_id:
-                send_push_notification(user_id, data.get('title', 'Notification'), message)
+                send_push_notification(user_id, title, message, {'order_id': order_id})
+            
+            # Notify admins about significant events (delivery, failure, etc.)
+            notif_type = data.get('notification_type', '')
+            if notif_type in ['success', 'error', 'warning'] or 'deliver' in title.lower() or 'fail' in title.lower():
+                notify_admins(
+                    f"System: {title}",
+                    f"Order #{order_id}: {message}" if order_id else message,
+                    'system',
+                    {'order_id': order_id, 'notification_type': notif_type}
+                )
+                
+        elif notification_type == 'user_registered':
+            # New user registration - notify all admins
+            user_name = data.get('name', 'Unknown')
+            role = data.get('role', 'user')
+            notify_admins(
+                "New User Registered",
+                f"New {role} account: {user_name}",
+                'system',
+                {'user_id': user_id, 'role': role}
+            )
                 
         else:
-            logger.warning("Unknown notification type", type=notification_type)
+            # Handle any realtime.* events
+            if notification_type and notification_type.startswith('realtime.'):
+                logger.info("Handling realtime event", event_type=notification_type)
+                # For generic realtime events, just log
+            else:
+                logger.warning("Unknown notification type", type=notification_type)
         
         # Acknowledge message
         ch.basic_ack(delivery_tag=method.delivery_tag)
@@ -374,10 +678,10 @@ class NotificationConsumer:
         self.connection = get_rabbitmq_connection()
         self.channel = self.connection.channel()
         
-        # Declare fanout exchange
+        # Declare topic exchange (matches RabbitMQ setup)
         self.channel.exchange_declare(
             exchange='swifttrack.notifications',
-            exchange_type='fanout',
+            exchange_type='topic',
             durable=True
         )
         
@@ -392,8 +696,8 @@ class NotificationConsumer:
             }
         )
         
-        # Bind to fanout exchange (no routing key needed)
-        self.channel.queue_bind('notification.email', 'swifttrack.notifications', '')
+        # Bind to topic exchange with wildcard pattern
+        self.channel.queue_bind('notification.email', 'swifttrack.notifications', '#')
         
         # Prefetch limit
         self.channel.basic_qos(prefetch_count=10)
