@@ -160,7 +160,7 @@ const DriverDashboard = () => {
           <table className="w-full">
             <thead>
               <tr className="border-b border-gray-200 dark:border-slate-700">
-                {['Order', 'Customer', 'Address', 'Time Slot', 'Priority', 'Status', ''].map((h, i) => (
+                {['Order', 'Recipient', 'Address', 'Time Slot', 'Priority', 'Status', ''].map((h, i) => (
                   <th key={i} className={`py-3 px-4 font-semibold text-gray-600 dark:text-gray-300 ${i === 6 ? 'text-right' : 'text-left'}`}>{h}</th>
                 ))}
               </tr>
@@ -171,7 +171,7 @@ const DriverDashboard = () => {
               ) : todayDeliveries.map(d => (
                 <tr key={d.id} className="hover:bg-gray-50 dark:hover:bg-slate-700/50">
                   <td className="py-4 px-4"><span className="font-mono text-sm text-primary-600 dark:text-primary-400">{d.id}</span></td>
-                  <td className="py-4 px-4 font-medium text-gray-900 dark:text-white">{d.customer}</td>
+                  <td className="py-4 px-4 font-medium text-gray-900 dark:text-white">{d.recipient || d.customer}</td>
                   <td className="py-4 px-4 text-gray-600 dark:text-gray-400 max-w-xs truncate">{d.address}</td>
                   <td className="py-4 px-4 text-gray-600 dark:text-gray-400">{d.timeSlot}</td>
                   <td className="py-4 px-4">{getPriorityBadge(d.priority)}</td>

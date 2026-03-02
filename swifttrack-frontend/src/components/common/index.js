@@ -9,3 +9,4 @@ export { default as Loader, LoadingSkeleton, CardSkeleton, TableSkeleton } from 
 export { default as StatCard } from './StatCard';
 export { default as EmptyState } from './EmptyState';
 export { default as Avatar } from './Avatar';
+export { default as MapPicker } from './MapPicker';

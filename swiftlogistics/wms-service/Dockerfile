@@ -13,10 +13,13 @@ COPY consumer.py .
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 
+# Enable unbuffered Python output for Docker logs
+ENV PYTHONUNBUFFERED=1
+
 EXPOSE 5005
 
 # Health check via HTTP
 HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
     CMD curl -f http://localhost:5005/health || exit 1
 
-CMD ["python", "consumer.py"]
+CMD ["python", "-u", "consumer.py"]

@@ -158,13 +158,17 @@ def receive_package(order_id, package_type, priority):
     =========================================================================
     """
     logger.info("Receiving package", order_id=order_id, package_type=package_type)
-    print(f"\n{'='*60}")
-    print(f"[WMS] 📦 NEW PACKAGE ARRIVED")
-    print(f"[WMS]   Order ID     : {order_id}")
-    print(f"[WMS]   Package Type : {package_type}")
-    print(f"[WMS]   Priority     : {priority}")
-    print(f"[WMS]   Time         : {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
-    print(f"{'='*60}\n")
+    
+    print(f"\n{'━'*80}")
+    print(f"  📦 NEW ORDER RECEIVED - WAREHOUSE PROCESSING STARTED")
+    print(f"{'━'*80}")
+    print(f"  Order ID     : {order_id}")
+    print(f"  Package Type : {package_type}")
+    print(f"  Priority     : {priority}")
+    print(f"  Timestamp    : {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+    print(f"{'━'*80}\n")
+    
+    try:
         conn = get_db_connection()
         cursor = conn.cursor()
         
@@ -193,9 +197,13 @@ def receive_package(order_id, package_type, priority):
         conn.close()
 
         # ---------------------------------------------------------------
-        # MIDDLEWARE STAGE 1 of 3: 'ready' — order received by middleware
+        # STAGE 1: Inventory Allocation
         # ---------------------------------------------------------------
-        print(f"[WMS] ⬜ STAGE 1/4 → READY  | Order {order_id} | Inventory slot assigned: {location_code} / {shelf_number}")
+        print(f"\n  ⬜ STAGE 1/4 - INVENTORY ALLOCATION")
+        print(f"     └─ Order ID: {order_id}")
+        print(f"     └─ Warehouse Location: {location_code}")
+        print(f"     └─ Shelf Assignment: {shelf_number}")
+        print(f"     └─ Status: ✅ Slot Reserved")
         publish_message('swifttrack.notifications', 'realtime.update', {
             'type': 'middleware_update',
             'order_id': order_id,
@@ -227,7 +235,9 @@ def receive_package(order_id, package_type, priority):
         conn.close()
 
         logger.info("Order confirmed", order_id=order_id)
-        print(f"[WMS] ✅ STATUS CHANGE  → pending → CONFIRMED  | Order {order_id}")
+        print(f"\n  ✅ ORDER STATUS UPDATE")
+        print(f"     └─ {order_id}: pending → CONFIRMED")
+        print(f"     └─ System validation complete")
 
         # Broadcast order status update: confirmed
         publish_message('swifttrack.notifications', 'realtime.update', {
@@ -242,9 +252,12 @@ def receive_package(order_id, package_type, priority):
         })
 
         # ---------------------------------------------------------------
-        # MIDDLEWARE STAGE 2 of 3: 'loaded' — package loaded into system
+        # STAGE 2: Package Registration
         # ---------------------------------------------------------------
-        print(f"[WMS] 🟡 STAGE 2/4 → LOADED | Order {order_id} | Status broadcast: confirmed")
+        print(f"\n  🟡 STAGE 2/4 - PACKAGE REGISTERED")
+        print(f"     └─ Order ID: {order_id}")
+        print(f"     └─ Status: CONFIRMED")
+        print(f"     └─ Action: Broadcasting to clients...")
         publish_message('swifttrack.notifications', 'realtime.update', {
             'type': 'middleware_update',
             'order_id': order_id,
@@ -283,7 +296,10 @@ def receive_package(order_id, package_type, priority):
 
         logger.info("Package received successfully", order_id=order_id,
                    location=location_code, shelf=shelf_number)
-        print(f"[WMS] ✅ STATUS CHANGE  → confirmed → IN_WAREHOUSE | Order {order_id} | {location_code} / {shelf_number}")
+        print(f"\n  ✅ ORDER STATUS UPDATE")
+        print(f"     └─ {order_id}: confirmed → IN_WAREHOUSE")
+        print(f"     └─ Physical Location: {location_code} / {shelf_number}")
+        print(f"     └─ Inventory record created")
 
         # Broadcast order status update: in_warehouse
         publish_message('swifttrack.notifications', 'realtime.update', {
@@ -300,9 +316,12 @@ def receive_package(order_id, package_type, priority):
         })
 
         # ---------------------------------------------------------------
-        # MIDDLEWARE STAGE 3 of 3: 'dispatched' — package dispatched to warehouse floor
+        # STAGE 3: Warehouse Floor Dispatch
         # ---------------------------------------------------------------
-        print(f"[WMS] 🟠 STAGE 3/4 → DISPATCHED | Order {order_id} | Status broadcast: in_warehouse")
+        print(f"\n  🟠 STAGE 3/4 - DISPATCHED TO FLOOR")
+        print(f"     └─ Order ID: {order_id}")
+        print(f"     └─ Package moved to picking area")
+        print(f"     └─ Real-time notification sent")
         publish_message('swifttrack.notifications', 'realtime.update', {
             'type': 'middleware_update',
             'order_id': order_id,
@@ -317,11 +336,17 @@ def receive_package(order_id, package_type, priority):
         })
 
         # ---------------------------------------------------------------
-        # MIDDLEWARE STAGE 4 of 4: 'pending' — awaiting driver assignment
+        # STAGE 4: Ready for Delivery
         # ---------------------------------------------------------------
         time.sleep(1)
-        print(f"[WMS] 🔵 STAGE 4/4 → PENDING   | Order {order_id} | Awaiting driver assignment")
-        print(f"[WMS] 🏁 PIPELINE COMPLETE      | Order {order_id} | All 4 stages done\n")
+        print(f"\n  🔵 STAGE 4/4 - READY FOR PICKUP")
+        print(f"     └─ Order ID: {order_id}")
+        print(f"     └─ Status: Awaiting driver assignment")
+        print(f"     └─ Package ready for dispatch")
+        print(f"\n  🏁 PROCESSING COMPLETE")
+        print(f"     └─ Order {order_id} successfully processed")
+        print(f"     └─ All 4 stages completed")
+        print(f"{'━'*80}\n")
         publish_message('swifttrack.notifications', 'realtime.update', {
             'type': 'middleware_update',
             'order_id': order_id,
@@ -338,7 +363,7 @@ def receive_package(order_id, package_type, priority):
         
     except Exception as e:
         logger.error("Failed to receive package", order_id=order_id, error=str(e))
-        print(f"[WMS] ❌ ERROR in receive_package | Order {order_id} | {e}")
+        print(f"[WMS] ERROR in receive_package | Order {order_id} | {e}")
         return False
 
 def dispatch_package(order_id, driver_id=None):
@@ -354,7 +379,9 @@ def dispatch_package(order_id, driver_id=None):
     =========================================================================
     """
     logger.info("Dispatching package", order_id=order_id, driver_id=driver_id)
-    print(f"\n[WMS] 🚚 DISPATCH TRIGGERED    | Order {order_id} | Driver {driver_id or 'auto-assign'}")
+    print(f"\n┌─ 🚚 DISPATCH OPERATION")
+    print(f"│  Order: {order_id}")
+    print(f"└─ Driver: {driver_id or 'auto-assign'}")
     
     try:
         conn = get_db_connection()
@@ -402,7 +429,9 @@ def dispatch_package(order_id, driver_id=None):
         conn.close()
 
         logger.info("Package dispatched successfully", order_id=order_id)
-        print(f"[WMS] ✅ STATUS CHANGE  → in_warehouse → OUT_FOR_DELIVERY | Order {order_id}")
+        print(f"\n  ✅ ORDER STATUS UPDATE")
+        print(f"     └─ {order_id}: in_warehouse → OUT_FOR_DELIVERY")
+        print(f"     └─ Package handed to driver")
 
         # Broadcast 'out_for_delivery' to WebSocket clients via realtime routing
         publish_message('swifttrack.notifications', 'realtime.update', {
@@ -421,7 +450,7 @@ def dispatch_package(order_id, driver_id=None):
         
     except Exception as e:
         logger.error("Failed to dispatch package", order_id=order_id, error=str(e))
-        print(f"[WMS] ❌ ERROR in dispatch_package | Order {order_id} | {e}")
+        print(f"[WMS] ERROR in dispatch_package | Order {order_id} | {e}")
         return False
 
 def release_slot(order_id):
@@ -491,7 +520,10 @@ def handle_receive_message(ch, method, properties, body):
     retry_count = (properties.headers or {}).get('x-retry-count', 0)
     
     logger.info("Processing receive message", message_id=message_id, retry=retry_count)
-    print(f"\n[WMS] 📬 MSG RECEIVED (warehouse.receive) | msg_id={message_id} | retry={retry_count}")
+    print(f"\n┌─ 📨 INCOMING MESSAGE")
+    print(f"│  Queue: warehouse.receive")
+    print(f"│  Message ID: {message_id}")
+    print(f"└─ Retry Count: {retry_count}/{MAX_RETRIES}")
     
     try:
         data = json.loads(body)
@@ -513,21 +545,27 @@ def handle_receive_message(ch, method, properties, body):
             # =====================================================
             ch.basic_ack(delivery_tag=method.delivery_tag)
             logger.info("Message acknowledged", message_id=message_id, order_id=order_id)
-            print(f"[WMS] ✔️  ACK sent                    | Order {order_id}")
+            print(f"\n  ✔️  MESSAGE ACKNOWLEDGED")
+            print(f"     └─ Order {order_id} processing complete")
+            print(f"     └─ ACK sent to RabbitMQ")
         else:
             # Retry or reject to DLQ
             if retry_count < MAX_RETRIES:
                 # Requeue with retry count
                 logger.warning("Requeuing message for retry", 
                              message_id=message_id, retry=retry_count + 1)
-                print(f"[WMS] ⚠️  RETRY {retry_count+1}/{MAX_RETRIES}               | Order {order_id}")
+                print(f"\n  ⚠️  RETRY SCHEDULED")
+                print(f"     └─ Attempt: {retry_count+1}/{MAX_RETRIES}")
+                print(f"     └─ Order {order_id} will be retried")
                 # Negative acknowledgement - requeue
                 ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
             else:
                 # Max retries exceeded - send to DLQ
                 logger.error("Max retries exceeded, sending to DLQ", 
                            message_id=message_id, order_id=order_id)
-                print(f"[WMS] ❌  MAX RETRIES hit → DLQ       | Order {order_id}")
+                print(f"\n  ❌ MAX RETRIES EXCEEDED")
+                print(f"     └─ Order {order_id} moved to Dead Letter Queue")
+                print(f"     └─ Manual intervention required")
                 # Reject without requeue - goes to DLQ
                 ch.basic_reject(delivery_tag=method.delivery_tag, requeue=False)
                 
@@ -547,7 +585,10 @@ def handle_dispatch_message(ch, method, properties, body):
     retry_count = (properties.headers or {}).get('x-retry-count', 0)
     
     logger.info("Processing dispatch message", message_id=message_id)
-    print(f"\n[WMS] 📬 MSG RECEIVED (warehouse.dispatch) | msg_id={message_id} | retry={retry_count}")
+    print(f"\n┌─ 📨 INCOMING MESSAGE")
+    print(f"│  Queue: warehouse.dispatch")
+    print(f"│  Message ID: {message_id}")
+    print(f"└─ Retry Count: {retry_count}/{MAX_RETRIES}")
     
     try:
         data = json.loads(body)
@@ -562,13 +603,17 @@ def handle_dispatch_message(ch, method, properties, body):
         
         if success:
             ch.basic_ack(delivery_tag=method.delivery_tag)
-            print(f"[WMS] ✔️  ACK sent (dispatch)         | Order {order_id}")
+            print(f"\n  ✔️  DISPATCH COMPLETE")
+            print(f"     └─ Order {order_id} dispatched")
+            print(f"     └─ ACK sent to RabbitMQ")
         else:
             if retry_count < MAX_RETRIES:
-                print(f"[WMS] ⚠️  RETRY dispatch {retry_count+1}/{MAX_RETRIES}     | Order {order_id}")
+                print(f"\n  ⚠️  DISPATCH RETRY {retry_count+1}/{MAX_RETRIES}")
+                print(f"     └─ Order {order_id}")
                 ch.basic_nack(delivery_tag=method.delivery_tag, requeue=True)
             else:
-                print(f"[WMS] ❌  MAX RETRIES dispatch → DLQ  | Order {order_id}")
+                print(f"\n  ❌ DISPATCH FAILED → DLQ")
+                print(f"     └─ Order {order_id}")
                 ch.basic_reject(delivery_tag=method.delivery_tag, requeue=False)
                 
     except Exception as e:

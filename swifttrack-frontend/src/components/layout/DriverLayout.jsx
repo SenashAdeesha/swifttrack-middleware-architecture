@@ -5,7 +5,8 @@ import {
   Route, 
   Package, 
   BarChart3,
-  Truck
+  Truck,
+  Bell
 } from 'lucide-react';
 import Sidebar from './Sidebar';
 import Header from './Header';
@@ -14,6 +15,7 @@ const driverNavItems = [
   { path: '/driver/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { path: '/driver/route', label: 'My Route', icon: Route },
   { path: '/driver/performance', label: 'Performance', icon: BarChart3 },
+  { path: '/driver/notifications', label: 'Notifications', icon: Bell },
 ];
 
 const DriverLayout = () => {

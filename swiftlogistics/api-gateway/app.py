@@ -548,36 +548,52 @@ def mark_order_failed(order_id):
         logger.error("Failed to mark order as failed", error=str(e), order_id=order_id)
         return jsonify({'error': 'Service temporarily unavailable'}), 503
 
-@app.route('/api/orders/<order_id>/status', methods=['PUT'])
+@app.route('/api/orders/<order_id>/start_delivery', methods=['POST'])
 @optional_token
-def update_order_status(order_id):
-    """Update order status only — used by driver Delivery page and admin dashboard."""
-    try:
-        response = requests.put(
-            f"{MIDDLEWARE_SERVICE_URL}/orders/{order_id}/status",
-            json=request.get_json() or {},
-            headers={'X-User-Context': json.dumps(g.current_user)} if g.current_user else {},
-            timeout=10
-        )
-        return jsonify(response.json()), response.status_code
-    except requests.RequestException as e:
-        logger.error("Failed to update order status", error=str(e), order_id=order_id)
-        return jsonify({'error': 'Service temporarily unavailable'}), 503
-
-@app.route('/api/orders/<order_id>/assign', methods=['POST'])
-@optional_token
-def assign_driver_to_order(order_id):
-    """Assign a driver to an order."""
+def start_delivery(order_id):
+    """Start delivery - changes order status to out_for_delivery."""
     try:
         response = requests.post(
-            f"{MIDDLEWARE_SERVICE_URL}/orders/{order_id}/assign",
+            f"{MIDDLEWARE_SERVICE_URL}/orders/{order_id}/start_delivery",
             json=request.get_json() or {},
             headers={'X-User-Context': json.dumps(g.current_user)} if g.current_user else {},
             timeout=10
         )
         return jsonify(response.json()), response.status_code
     except requests.RequestException as e:
-        logger.error("Failed to assign driver to order", error=str(e), order_id=order_id)
+        logger.error("Failed to start delivery", error=str(e), order_id=order_id)
+        return jsonify({'error': 'Service temporarily unavailable'}), 503
+
+@app.route('/api/orders/<order_id>/accept', methods=['POST'])
+@optional_token
+def accept_order(order_id):
+    """Accept order - driver accepts an assigned order."""
+    try:
+        response = requests.post(
+            f"{MIDDLEWARE_SERVICE_URL}/orders/{order_id}/accept",
+            json=request.get_json() or {},
+            headers={'X-User-Context': json.dumps(g.current_user)} if g.current_user else {},
+            timeout=10
+        )
+        return jsonify(response.json()), response.status_code
+    except requests.RequestException as e:
+        logger.error("Failed to accept order", error=str(e), order_id=order_id)
+        return jsonify({'error': 'Service temporarily unavailable'}), 503
+
+@app.route('/api/orders/<order_id>/reject', methods=['POST'])
+@optional_token
+def reject_order(order_id):
+    """Reject order - driver rejects an assigned order."""
+    try:
+        response = requests.post(
+            f"{MIDDLEWARE_SERVICE_URL}/orders/{order_id}/reject",
+            json=request.get_json() or {},
+            headers={'X-User-Context': json.dumps(g.current_user)} if g.current_user else {},
+            timeout=10
+        )
+        return jsonify(response.json()), response.status_code
+    except requests.RequestException as e:
+        logger.error("Failed to reject order", error=str(e), order_id=order_id)
         return jsonify({'error': 'Service temporarily unavailable'}), 503
 
 # =============================================================================
@@ -1294,6 +1310,196 @@ def delete_notification(notification_id):
     except Exception as e:
         logger.error("Failed to delete notification", error=str(e))
         return jsonify({'error': 'Failed to delete notification'}), 500
+
+# =============================================================================
+# SERVICE ACTIVITY ENDPOINTS
+# =============================================================================
+
+@app.route('/api/service-activity', methods=['GET'])
+@optional_token
+def get_service_activity():
+    """Get service activity logs for CMS, WMS, and ROS services."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Query parameters
+        order_id = request.args.get('order_id')
+        service_name = request.args.get('service_name')
+        status = request.args.get('status')
+        limit = int(request.args.get('limit', 100))
+        offset = int(request.args.get('offset', 0))
+        
+        # Build query
+        query = """
+            SELECT sa.*, o.status as order_status, 
+                   u.name as client_name
+            FROM service_activity sa
+            LEFT JOIN orders o ON sa.order_id = o.id
+            LEFT JOIN clients c ON o.client_id = c.id
+            LEFT JOIN users u ON c.user_id = u.id
+            WHERE 1=1
+        """
+        params = []
+        
+        if order_id:
+            query += " AND sa.order_id = %s"
+            params.append(order_id)
+        
+        if service_name:
+            query += " AND sa.service_name = %s"
+            params.append(service_name.upper())
+        
+        if status:
+            query += " AND sa.status = %s"
+            params.append(status)
+        
+        query += " ORDER BY sa.created_at DESC LIMIT %s OFFSET %s"
+        params.extend([limit, offset])
+        
+        cursor.execute(query, params)
+        activities = cursor.fetchall()
+        
+        # Get total count
+        count_query = """
+            SELECT COUNT(*) FROM service_activity sa WHERE 1=1
+        """
+        count_params = []
+        if order_id:
+            count_query += " AND sa.order_id = %s"
+            count_params.append(order_id)
+        if service_name:
+            count_query += " AND sa.service_name = %s"
+            count_params.append(service_name.upper())
+        if status:
+            count_query += " AND sa.status = %s"
+            count_params.append(status)
+        
+        cursor.execute(count_query, count_params)
+        total = cursor.fetchone()['count']
+        
+        conn.close()
+        
+        # Format response
+        result = []
+        for activity in activities:
+            result.append({
+                'id': str(activity['id']),
+                'order_id': activity['order_id'],
+                'order_status': activity['order_status'],
+                'client_name': activity['client_name'],
+                'service_name': activity['service_name'],
+                'service_type': activity['service_type'],
+                'action': activity['action'],
+                'status': activity['status'],
+                'protocol': activity['protocol'],
+                'endpoint': activity['endpoint'],
+                'request_data': activity['request_data'],
+                'response_data': activity['response_data'],
+                'error_message': activity['error_message'],
+                'duration_ms': activity['duration_ms'],
+                'created_at': activity['created_at'].isoformat() if activity['created_at'] else None
+            })
+        
+        return jsonify({
+            'data': result,
+            'total': total,
+            'limit': limit,
+            'offset': offset
+        }), 200
+        
+    except Exception as e:
+        logger.error("Failed to fetch service activity", error=str(e))
+        return jsonify({'error': 'Failed to fetch service activity'}), 500
+
+@app.route('/api/service-activity/stats', methods=['GET'])
+@optional_token
+def get_service_activity_stats():
+    """Get service activity statistics."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Get counts by service
+        cursor.execute("""
+            SELECT service_name, 
+                   COUNT(*) as total,
+                   COUNT(*) FILTER (WHERE status = 'success') as success_count,
+                   COUNT(*) FILTER (WHERE status = 'failed') as failed_count,
+                   COUNT(*) FILTER (WHERE status = 'skipped') as skipped_count,
+                   AVG(duration_ms) FILTER (WHERE duration_ms IS NOT NULL) as avg_duration
+            FROM service_activity
+            GROUP BY service_name
+        """)
+        service_stats = cursor.fetchall()
+        
+        # Get recent activity count (last 24 hours)
+        cursor.execute("""
+            SELECT COUNT(*) as count
+            FROM service_activity
+            WHERE created_at > NOW() - INTERVAL '24 hours'
+        """)
+        recent = cursor.fetchone()
+        
+        conn.close()
+        
+        stats = {
+            'services': {},
+            'total_last_24h': recent['count']
+        }
+        
+        for row in service_stats:
+            stats['services'][row['service_name']] = {
+                'total': row['total'],
+                'success': row['success_count'],
+                'failed': row['failed_count'],
+                'skipped': row['skipped_count'],
+                'avg_duration_ms': round(float(row['avg_duration']), 2) if row['avg_duration'] else None
+            }
+        
+        return jsonify({'data': stats}), 200
+        
+    except Exception as e:
+        logger.error("Failed to fetch service activity stats", error=str(e))
+        return jsonify({'error': 'Failed to fetch service activity stats'}), 500
+
+@app.route('/api/service-activity/order/<order_id>', methods=['GET'])
+@optional_token
+def get_order_service_activity(order_id):
+    """Get service activity for a specific order."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT * FROM service_activity
+            WHERE order_id = %s
+            ORDER BY created_at ASC
+        """, (order_id,))
+        
+        activities = cursor.fetchall()
+        conn.close()
+        
+        result = []
+        for activity in activities:
+            result.append({
+                'id': str(activity['id']),
+                'service_name': activity['service_name'],
+                'service_type': activity['service_type'],
+                'action': activity['action'],
+                'status': activity['status'],
+                'protocol': activity['protocol'],
+                'endpoint': activity['endpoint'],
+                'error_message': activity['error_message'],
+                'duration_ms': activity['duration_ms'],
+                'created_at': activity['created_at'].isoformat() if activity['created_at'] else None
+            })
+        
+        return jsonify({'data': result}), 200
+        
+    except Exception as e:
+        logger.error("Failed to fetch order service activity", error=str(e))
+        return jsonify({'error': 'Failed to fetch order service activity'}), 500
 
 # =============================================================================
 # ERROR HANDLERS

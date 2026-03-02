@@ -4,8 +4,8 @@ import { io } from 'socket.io-client';
 // =============================================================================
 // API Configuration
 // =============================================================================
-const API_BASE_URL = 'http://localhost:5002/api';
-const WEBSOCKET_URL = 'http://localhost:5006';
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5002/api';
+const WEBSOCKET_URL = import.meta.env.VITE_WEBSOCKET_URL || 'http://localhost:5006';
 
 // Create axios instance
 const api = axios.create({
@@ -79,7 +79,7 @@ class WebSocketService {
     // Set up event forwarding
     ['order_status_update', 'driver_location', 'new_order', 'driver_assigned',
      'new_assignment', 'delivery_completed', 'notification', 'proof_uploaded',
-     'middleware_update'].forEach(event => {
+     'middleware_update', 'cms_update', 'ros_update', 'wms_update', 'timeline_update'].forEach(event => {
       this.socket.on(event, (data) => {
         this.emit(event, data);
       });
@@ -88,9 +88,23 @@ class WebSocketService {
     return this;
   }
 
-  authenticate(token) {
+  authenticate(userIdOrToken, role = null) {
     if (this.socket?.connected) {
-      this.socket.emit('authenticate', { token });
+      // Support both (token) and (userId, role) signatures
+      if (role) {
+        this.socket.emit('authenticate', { userId: userIdOrToken, role });
+      } else {
+        // Try to get user data from localStorage
+        const userStr = localStorage.getItem('swifttrack_user');
+        if (userStr) {
+          try {
+            const user = JSON.parse(userStr);
+            this.socket.emit('authenticate', { userId: user.id, role: user.role });
+          } catch (e) {
+            console.error('[WS] Failed to parse user data:', e);
+          }
+        }
+      }
     }
   }
 
@@ -233,6 +247,16 @@ export const ordersAPI = {
 
   startDelivery: async (orderId) => {
     const response = await api.post(`/orders/${orderId}/start_delivery`, {});
+    return { data: response.data };
+  },
+
+  acceptOrder: async (orderId) => {
+    const response = await api.post(`/orders/${orderId}/accept`, {});
+    return { data: response.data };
+  },
+
+  rejectOrder: async (orderId, reason = '') => {
+    const response = await api.post(`/orders/${orderId}/reject`, { reason });
     return { data: response.data };
   },
 

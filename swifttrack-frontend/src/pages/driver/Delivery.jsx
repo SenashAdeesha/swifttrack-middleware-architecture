@@ -36,7 +36,7 @@ const Delivery = () => {
   const selectedOrder = orders.find(o => o.id === selectedId) || orders[0];
 
   const failReasons = [
-    'Customer not home',
+    'Recipient not home',
     'Wrong address',
     'Access denied / gate locked',
     'Package refused by recipient',
@@ -315,7 +315,7 @@ const Delivery = () => {
                       <span className="font-mono text-xs text-primary-600 dark:text-primary-400">{order.id}</span>
                       <Badge variant={priorityVariant[order.priority] || 'default'} className="text-xs">{order.priority || 'normal'}</Badge>
                     </div>
-                    <p className="font-semibold text-sm text-gray-900 dark:text-white mt-0.5 truncate">{order.customerName || order.customer}</p>
+                    <p className="font-semibold text-sm text-gray-900 dark:text-white mt-0.5 truncate">{order.customerName || order.recipient || order.customer}</p>
                     <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{order.deliveryAddress || order.address}</p>
                   </div>
                   <div className="flex flex-col items-end gap-1 shrink-0">
@@ -374,7 +374,7 @@ const Delivery = () => {
                 <div className="flex items-start gap-3 p-3 bg-gray-50 dark:bg-slate-700/50 rounded-xl">
                   <User className="w-4 h-4 text-primary-500 mt-0.5 shrink-0" />
                   <div>
-                    <p className="text-xs text-gray-400 uppercase tracking-wide">Customer</p>
+                    <p className="text-xs text-gray-400 uppercase tracking-wide">Recipient</p>
                     <p className="font-semibold text-gray-900 dark:text-white">{selectedOrder?.customerName || selectedOrder?.customer}</p>
                   </div>
                 </div>
@@ -491,7 +491,7 @@ const Delivery = () => {
         <div className="space-y-4">
           <div className="p-4 bg-blue-50 dark:bg-blue-900/20 rounded-xl">
             <p className="text-sm font-semibold text-blue-800 dark:text-blue-200">Order {selectedOrder?.id}</p>
-            <p className="text-sm text-blue-600 dark:text-blue-300 mt-1">{selectedOrder?.customer} — {selectedOrder?.address}</p>
+            <p className="text-sm text-blue-600 dark:text-blue-300 mt-1">{selectedOrder?.recipient || selectedOrder?.customer} — {selectedOrder?.address}</p>
           </div>
           <div className="space-y-2">
             <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Before confirming pickup, verify:</p>
@@ -631,7 +631,7 @@ const Delivery = () => {
       <Modal isOpen={showFailedModal} onClose={() => setShowFailedModal(false)} title="Mark Delivery as Failed" size="md">
         <div className="space-y-4">
           <div className="p-4 bg-red-50 dark:bg-red-900/20 rounded-xl border border-red-200 dark:border-red-800">
-            <p className="text-sm font-semibold text-red-800 dark:text-red-200">Order {selectedOrder?.id} — {selectedOrder?.customer}</p>
+            <p className="text-sm font-semibold text-red-800 dark:text-red-200">Order {selectedOrder?.id} — {selectedOrder?.recipient || selectedOrder?.customer}</p>
           </div>
 
           <div>

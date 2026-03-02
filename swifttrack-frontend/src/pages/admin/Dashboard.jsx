@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Users, Truck, Package, Activity, TrendingUp, DollarSign, Clock, AlertCircle,
@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 import { Card, CardHeader, CardTitle, Badge, Button, StatCard, Modal } from '../../components/common';
 import { useAuth } from '../../context/AuthContext';
-import { adminAPI, ordersAPI } from '../../services/api';
+import { adminAPI, ordersAPI, wsService } from '../../services/api';
 import { AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
 import toast from 'react-hot-toast';
 
@@ -20,7 +20,35 @@ const AdminDashboard = () => {
   const [alerts, setAlerts] = useState([]);
   const [showAlertModal, setShowAlertModal] = useState(false);
 
+  // Handle real-time order status updates
+  const handleOrderStatusUpdate = useCallback((data) => {
+    const { orderId, status } = data;
+    setRecentOrders(prev => prev.map(order => 
+      String(order.id) === String(orderId) ? { ...order, status } : order
+    ));
+  }, []);
+
+  // Handle new orders
+  const handleNewOrder = useCallback((data) => {
+    fetchDashboardData(true);
+  }, []);
+
   useEffect(() => { fetchDashboardData(); }, []);
+
+  // WebSocket subscription for real-time updates
+  useEffect(() => {
+    wsService.connect();
+    
+    const unsubStatus = wsService.on('order_status_update', handleOrderStatusUpdate);
+    const unsubNew = wsService.on('new_order', handleNewOrder);
+    const unsubDelivered = wsService.on('delivery_completed', handleOrderStatusUpdate);
+
+    return () => {
+      unsubStatus();
+      unsubNew();
+      unsubDelivered();
+    };
+  }, [handleOrderStatusUpdate, handleNewOrder]);
 
   const fetchDashboardData = async (silent = false) => {
     if (!silent) setLoading(true);
@@ -78,7 +106,8 @@ const AdminDashboard = () => {
     { title: 'Revenue (MTD)', value: `$${(stats.revenue || 67240).toLocaleString()}`, change: '+23%', trend: 'up', icon: DollarSign, color: 'warning' },
   ];
 
-  const getStatusColor = (status) => ({ pending: 'warning', picked_up: 'info', in_transit: 'primary', out_for_delivery: 'primary', delivered: 'success', cancelled: 'danger', failed: 'danger' }[status] || 'default');
+  const getStatusColor = (status) => ({ pending: 'warning', picked_up: 'info', in_transit: 'primary', out_for_delivery: 'primary', delivered: 'success', cancelled: 'danger', failed: 'danger', in_warehouse: 'warning', confirmed: 'warning', accepted_by_driver: 'success', rejected_by_driver: 'danger' }[status] || 'default');
+  const getStatusLabel = (status) => ({ confirmed: 'Pending', in_warehouse: 'Pending', accepted_by_driver: 'Driver Accepted', rejected_by_driver: 'Driver Rejected' }[status] || status?.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()));
   const getHealthColor = (status) => ({ operational: 'bg-green-500', degraded: 'bg-yellow-500', down: 'bg-red-500' }[status]);
   const getAlertIcon = (type) => ({ warning: AlertTriangle, info: Bell, success: CheckCircle, error: AlertCircle }[type] || Bell);
   const getAlertColor = (type) => ({ warning: 'text-yellow-500 bg-yellow-100 dark:bg-yellow-900/30', info: 'text-blue-500 bg-blue-100 dark:bg-blue-900/30', success: 'text-green-500 bg-green-100 dark:bg-green-900/30', error: 'text-red-500 bg-red-100 dark:bg-red-900/30' }[type]);
@@ -174,7 +203,7 @@ const AdminDashboard = () => {
                   <tr key={order.id} className="hover:bg-gray-50 dark:hover:bg-slate-700/30">
                     <td className="py-3 px-4"><span className="font-mono text-sm text-primary-600">{order.id}</span></td>
                     <td className="py-3 px-4 font-medium text-gray-900 dark:text-white">{order.client || order.clientName || 'N/A'}</td>
-                    <td className="py-3 px-4"><Badge variant={getStatusColor(order.status)} size="sm">{order.status?.replace(/_/g, ' ')}</Badge></td>
+                    <td className="py-3 px-4"><Badge variant={getStatusColor(order.status)} size="sm">{getStatusLabel(order.status)}</Badge></td>
                     <td className="py-3 px-4 font-semibold text-gray-900 dark:text-white">${(order.amount || 0).toFixed(2)}</td>
                     <td className="py-3 px-4 text-right"><Link to={`/admin/orders`}><Button size="sm" variant="ghost" icon={Eye} /></Link></td>
                   </tr>

@@ -7,12 +7,13 @@
 from .circuit_breaker import (
     CircuitBreaker,
     CircuitBreakerFactory,
-    CircuitBreakerError,
+    CircuitBreakerOpen,
     CircuitState
 )
 
 from .retry_handler import (
     RetryHandler,
+    retry,
     retry_with_backoff,
     ExponentialBackoff,
     FibonacciBackoff
@@ -21,19 +22,20 @@ from .retry_handler import (
 from .idempotency import (
     IdempotencyKey,
     IdempotencyStore,
-    idempotency_middleware,
-    check_idempotency
+    idempotent,
+    FlaskIdempotencyMiddleware
 )
 
 from .correlation import (
     CorrelationContext,
     CorrelationMiddleware,
+    correlation_middleware,
     get_current_context,
-    set_context,
-    clear_context,
-    correlation_required,
-    inject_correlation_rabbitmq,
-    extract_correlation_rabbitmq
+    set_current_context,
+    clear_current_context,
+    with_correlation,
+    publish_with_correlation,
+    consume_with_correlation
 )
 
 from .logging_utils import (
@@ -70,11 +72,12 @@ __all__ = [
     # Circuit Breaker
     'CircuitBreaker',
     'CircuitBreakerFactory',
-    'CircuitBreakerError',
+    'CircuitBreakerOpen',
     'CircuitState',
     
     # Retry Handler
     'RetryHandler',
+    'retry',
     'retry_with_backoff',
     'ExponentialBackoff',
     'FibonacciBackoff',
@@ -82,18 +85,19 @@ __all__ = [
     # Idempotency
     'IdempotencyKey',
     'IdempotencyStore',
-    'idempotency_middleware',
-    'check_idempotency',
+    'idempotent',
+    'FlaskIdempotencyMiddleware',
     
     # Correlation
     'CorrelationContext',
     'CorrelationMiddleware',
+    'correlation_middleware',
     'get_current_context',
-    'set_context',
-    'clear_context',
-    'correlation_required',
-    'inject_correlation_rabbitmq',
-    'extract_correlation_rabbitmq',
+    'set_current_context',
+    'clear_current_context',
+    'with_correlation',
+    'publish_with_correlation',
+    'consume_with_correlation',
     
     # Logging
     'StructuredLogger',

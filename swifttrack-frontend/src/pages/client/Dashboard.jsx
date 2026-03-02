@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import {
   Package, Truck, Check, Clock, TrendingUp, Plus, Eye, ArrowRight,
-  Calendar, Activity, MapPin, RefreshCw, Filter
+  Calendar, Activity, MapPin, RefreshCw, Filter, Navigation, Wifi,
+  Server, Zap, Route, Users
 } from 'lucide-react';
 import { Card, CardHeader, CardTitle, Badge, Button, StatCard, TableSkeleton, EmptyState } from '../../components/common';
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
@@ -22,6 +23,14 @@ const Dashboard = () => {
   const flashTimers = useRef({});
   // Middleware pipeline stage per order: { orderId: 'ready'|'loaded'|'dispatched' }
   const [middlewareStages, setMiddlewareStages] = useState({});
+  // CMS Service status per order: { orderId: { status, message, timestamp } }
+  const [cmsStatus, setCmsStatus] = useState({});
+  // ROS Service status per order: { orderId: { status, message, timestamp } }
+  const [rosStatus, setRosStatus] = useState({});
+  // Real-time driver location tracking: { orderId: { lat, lng, lastUpdate } }
+  const [driverLocations, setDriverLocations] = useState({});
+  // Subscribed order IDs
+  const subscribedOrders = useRef(new Set());
 
   // Fetch dashboard data
   const fetchDashboardData = useCallback(async (silent = false) => {
@@ -121,6 +130,85 @@ const Dashboard = () => {
     setTimeout(() => fetchDashboardData(true), 500);
   }, [fetchDashboardData]);
 
+  // WS: driver location update — update active delivery location
+  const handleDriverLocation = useCallback((data) => {
+    const id = String(data.orderId || data.order_id);
+    if (!id) return;
+    setDriverLocations(prev => ({
+      ...prev,
+      [id]: {
+        lat: data.lat,
+        lng: data.lng,
+        lastUpdate: new Date().toLocaleTimeString(),
+        driverId: data.driverId
+      }
+    }));
+    triggerFlash(id);
+  }, [triggerFlash]);
+
+  // WS: CMS (SOAP/XML) service update — customer validation status
+  const handleCmsUpdate = useCallback((data) => {
+    const id = String(data.orderId || data.order_id);
+    if (!id) return;
+    setCmsStatus(prev => ({
+      ...prev,
+      [id]: {
+        status: data.status || data.event_type,
+        message: data.message || data.description,
+        timestamp: new Date().toLocaleTimeString(),
+        protocol: 'SOAP/XML'
+      }
+    }));
+    triggerFlash(id);
+  }, [triggerFlash]);
+
+  // WS: ROS (REST/JSON) service update — route optimization status
+  const handleRosUpdate = useCallback((data) => {
+    const id = String(data.orderId || data.order_id);
+    if (!id) return;
+    setRosStatus(prev => ({
+      ...prev,
+      [id]: {
+        status: data.status || data.event_type,
+        message: data.message || data.description,
+        timestamp: new Date().toLocaleTimeString(),
+        protocol: 'REST/JSON',
+        eta: data.eta,
+        distance: data.distance
+      }
+    }));
+    triggerFlash(id);
+  }, [triggerFlash]);
+
+  // Subscribe to active delivery orders for real-time location updates
+  useEffect(() => {
+    const activeOrderIds = orders
+      .filter(o => ['out_for_delivery', 'in_warehouse'].includes(o.status))
+      .map(o => String(o.id));
+    
+    // Subscribe to new active orders
+    activeOrderIds.forEach(id => {
+      if (!subscribedOrders.current.has(id)) {
+        wsService.subscribeToOrder(id);
+        subscribedOrders.current.add(id);
+      }
+    });
+    
+    // Unsubscribe from orders no longer active
+    subscribedOrders.current.forEach(id => {
+      if (!activeOrderIds.includes(id)) {
+        wsService.unsubscribeFromOrder(id);
+        subscribedOrders.current.delete(id);
+        // Clear driver location for this order
+        setDriverLocations(prev => {
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
+      }
+    });
+  }, [orders]);
+
   // Connect WebSocket and register listeners
   useEffect(() => {
     wsService.connect();
@@ -129,8 +217,11 @@ const Dashboard = () => {
     const u3 = wsService.on('new_order',           handleNewOrder);
     const u4 = wsService.on('middleware_update',   handleMiddlewareUpdate);
     const u5 = wsService.on('driver_assigned',     handleDriverAssigned);
-    return () => { u1(); u2(); u3(); u4(); u5(); };
-  }, [handleStatusUpdate, handleDeliveryCompleted, handleNewOrder, handleMiddlewareUpdate, handleDriverAssigned]);
+    const u6 = wsService.on('driver_location',     handleDriverLocation);
+    const u7 = wsService.on('cms_update',          handleCmsUpdate);
+    const u8 = wsService.on('ros_update',          handleRosUpdate);
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); };
+  }, [handleStatusUpdate, handleDeliveryCompleted, handleNewOrder, handleMiddlewareUpdate, handleDriverAssigned, handleDriverLocation, handleCmsUpdate, handleRosUpdate]);
 
   const statCards = [
     { title: 'Total Orders', value: stats.totalOrders || 0, icon: Package, trend: '+12%', trendUp: true, color: 'primary' },
@@ -191,6 +282,91 @@ const Dashboard = () => {
             trendUp={stat.trendUp} description={stat.description} variant={stat.color} loading={loading} />
         ))}
       </div>
+
+      {/* Service Integration Status Panel */}
+      {(Object.keys(cmsStatus).length > 0 || Object.keys(rosStatus).length > 0) && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between w-full">
+              <CardTitle icon={Server}>Service Integration Status</CardTitle>
+              <div className="flex items-center gap-2">
+                <span className="flex items-center gap-1 px-2 py-0.5 bg-green-100 dark:bg-green-900/30 rounded-full">
+                  <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+                  <span className="text-xs font-medium text-green-600 dark:text-green-400">Live</span>
+                </span>
+              </div>
+            </div>
+          </CardHeader>
+          <div className="p-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* CMS Service (SOAP/XML) */}
+              <div className="p-4 bg-gradient-to-br from-purple-50 to-indigo-50 dark:from-purple-900/20 dark:to-indigo-900/20 rounded-xl border border-purple-200 dark:border-purple-800">
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="w-10 h-10 rounded-lg bg-purple-100 dark:bg-purple-900/50 flex items-center justify-center">
+                    <Users className="w-5 h-5 text-purple-600 dark:text-purple-400" />
+                  </div>
+                  <div>
+                    <h4 className="font-semibold text-gray-900 dark:text-white">CMS Service</h4>
+                    <span className="text-xs font-mono bg-purple-200 dark:bg-purple-800 text-purple-700 dark:text-purple-300 px-1.5 py-0.5 rounded">SOAP/XML</span>
+                  </div>
+                </div>
+                <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">Customer Management & Validation</p>
+                {Object.keys(cmsStatus).length > 0 ? (
+                  <div className="space-y-2">
+                    {Object.entries(cmsStatus).slice(-3).map(([orderId, info]) => (
+                      <div key={orderId} className={`flex items-center justify-between p-2 bg-white/60 dark:bg-slate-800/60 rounded-lg ${flashIds.has(orderId) ? 'ring-2 ring-purple-400 animate-pulse' : ''}`}>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-medium text-gray-700 dark:text-gray-300">#{orderId}</span>
+                          <Badge variant={info.status?.includes('success') || info.status?.includes('validated') ? 'success' : info.status?.includes('error') ? 'danger' : 'warning'} size="sm">
+                            {info.status?.replace(/_/g, ' ').replace('cms_validation_', '')}
+                          </Badge>
+                        </div>
+                        <span className="text-xs text-gray-500">{info.timestamp}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-gray-400 italic">No recent activity</p>
+                )}
+              </div>
+
+              {/* ROS Service (REST/JSON) */}
+              <div className="p-4 bg-gradient-to-br from-blue-50 to-cyan-50 dark:from-blue-900/20 dark:to-cyan-900/20 rounded-xl border border-blue-200 dark:border-blue-800">
+                <div className="flex items-center gap-3 mb-3">
+                  <div className="w-10 h-10 rounded-lg bg-blue-100 dark:bg-blue-900/50 flex items-center justify-center">
+                    <Route className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+                  </div>
+                  <div>
+                    <h4 className="font-semibold text-gray-900 dark:text-white">ROS Service</h4>
+                    <span className="text-xs font-mono bg-blue-200 dark:bg-blue-800 text-blue-700 dark:text-blue-300 px-1.5 py-0.5 rounded">REST/JSON</span>
+                  </div>
+                </div>
+                <p className="text-sm text-gray-600 dark:text-gray-400 mb-2">Route Optimization & ETA Calculation</p>
+                {Object.keys(rosStatus).length > 0 ? (
+                  <div className="space-y-2">
+                    {Object.entries(rosStatus).slice(-3).map(([orderId, info]) => (
+                      <div key={orderId} className={`flex items-center justify-between p-2 bg-white/60 dark:bg-slate-800/60 rounded-lg ${flashIds.has(orderId) ? 'ring-2 ring-blue-400 animate-pulse' : ''}`}>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-medium text-gray-700 dark:text-gray-300">#{orderId}</span>
+                          <Badge variant={info.status?.includes('success') || info.status?.includes('optimized') ? 'success' : info.status?.includes('error') ? 'danger' : info.status?.includes('skipped') ? 'secondary' : 'warning'} size="sm">
+                            {info.status?.replace(/_/g, ' ').replace('ros_optimization_', '')}
+                          </Badge>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          {info.eta && <span className="text-xs text-blue-600 dark:text-blue-400">ETA: {info.eta}</span>}
+                          <span className="text-xs text-gray-500">{info.timestamp}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-gray-400 italic">No recent activity</p>
+                )}
+              </div>
+            </div>
+          </div>
+        </Card>
+      )}
 
       {/* Charts Row */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -257,7 +433,15 @@ const Dashboard = () => {
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between w-full">
-              <CardTitle icon={Truck}>Active Deliveries</CardTitle>
+              <div className="flex items-center gap-2">
+                <CardTitle icon={Truck}>Active Deliveries</CardTitle>
+                {Object.keys(driverLocations).length > 0 && (
+                  <span className="flex items-center gap-1 px-2 py-0.5 bg-green-100 dark:bg-green-900/30 rounded-full">
+                    <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+                    <span className="text-xs font-medium text-green-600 dark:text-green-400">Live tracking</span>
+                  </span>
+                )}
+              </div>
               <Link to="/client/orders?status=active" className="text-sm text-primary-600 hover:underline">View all</Link>
             </div>
           </CardHeader>
@@ -274,15 +458,37 @@ const Dashboard = () => {
               </div>
             ) : (
               <div className="space-y-3">
-                {activeDeliveries.map(order => (
+                {activeDeliveries.map(order => {
+                  const loc = driverLocations[String(order.id)];
+                  const isFlashing = flashIds.has(String(order.id));
+                  return (
                   <Link key={order.id} to={`/client/tracking/${order.id}`}
-                    className="flex items-center gap-4 p-4 bg-gray-50 dark:bg-slate-700/50 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-700 transition group">
-                    <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${order.status === 'out_for_delivery' ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-600' : 'bg-amber-100 dark:bg-amber-900/30 text-amber-600'}`}>
+                    className={`flex items-center gap-4 p-4 bg-gray-50 dark:bg-slate-700/50 rounded-xl hover:bg-gray-100 dark:hover:bg-slate-700 transition group ${isFlashing ? 'ring-2 ring-primary-400 ring-offset-2 dark:ring-offset-slate-800' : ''}`}>
+                    <div className={`relative w-12 h-12 rounded-xl flex items-center justify-center ${order.status === 'out_for_delivery' ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-600' : 'bg-amber-100 dark:bg-amber-900/30 text-amber-600'}`}>
                       {order.status === 'out_for_delivery' ? <Truck className="w-6 h-6" /> : <Package className="w-6 h-6" />}
+                      {loc && order.status === 'out_for_delivery' && (
+                        <span className="absolute -top-1 -right-1 w-3 h-3 bg-green-500 rounded-full animate-pulse border-2 border-white dark:border-slate-700" />
+                      )}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <p className="font-semibold text-gray-900 dark:text-white">#{order.id}</p>
+                      <div className="flex items-center gap-2">
+                        <p className="font-semibold text-gray-900 dark:text-white">#{order.id}</p>
+                        {loc && (
+                          <span className="flex items-center gap-1 text-xs text-green-600 dark:text-green-400">
+                            <Wifi className="w-3 h-3" />
+                            <span>Live</span>
+                          </span>
+                        )}
+                      </div>
                       <p className="text-sm text-gray-500 truncate">{order.deliveryAddress}</p>
+                      {loc && order.status === 'out_for_delivery' && (
+                        <div className="flex items-center gap-2 mt-1">
+                          <Navigation className="w-3 h-3 text-primary-500" />
+                          <span className="text-xs text-primary-600 dark:text-primary-400">
+                            Driver en route · Updated {loc.lastUpdate}
+                          </span>
+                        </div>
+                      )}
                     </div>
                     <div className="text-right">
                       <Badge variant={getStatusColor(order.status)} size="sm">{getStatusLabel(order.status)}</Badge>
@@ -290,7 +496,8 @@ const Dashboard = () => {
                     </div>
                     <ArrowRight className="w-5 h-5 text-gray-400 opacity-0 group-hover:opacity-100 transition" />
                   </Link>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -366,6 +573,33 @@ const Dashboard = () => {
                             </div>
                           );
                         })()}
+                        {/* CMS/ROS Service Integration Indicators */}
+                        {(cmsStatus[String(order.id)] || rosStatus[String(order.id)]) && (
+                          <div className="flex items-center gap-2 mt-1.5">
+                            {cmsStatus[String(order.id)] && (
+                              <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-medium ${
+                                cmsStatus[String(order.id)].status?.includes('success') || cmsStatus[String(order.id)].status?.includes('validated')
+                                  ? 'bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400'
+                                  : 'bg-purple-50 dark:bg-purple-900/20 text-purple-500 dark:text-purple-300'
+                              }`}>
+                                <span className="w-1.5 h-1.5 rounded-full bg-purple-500" />
+                                CMS
+                              </span>
+                            )}
+                            {rosStatus[String(order.id)] && (
+                              <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-medium ${
+                                rosStatus[String(order.id)].status?.includes('success') || rosStatus[String(order.id)].status?.includes('optimized')
+                                  ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400'
+                                  : rosStatus[String(order.id)].status?.includes('skipped')
+                                    ? 'bg-gray-100 dark:bg-gray-800 text-gray-500'
+                                    : 'bg-blue-50 dark:bg-blue-900/20 text-blue-500 dark:text-blue-300'
+                              }`}>
+                                <span className="w-1.5 h-1.5 rounded-full bg-blue-500" />
+                                ROS
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </td>
                       <td className="py-3 px-4 text-sm text-gray-500">{new Date(order.createdAt).toLocaleDateString()}</td>
                       <td className="py-3 px-4 text-right">

@@ -352,6 +352,35 @@ class SagaStateManager:
         logger.error("Saga failed", saga_id=saga_id, error=error)
 
 # =============================================================================
+# SERVICE ACTIVITY RECORDER
+# =============================================================================
+
+def record_service_activity(order_id, service_name, service_type, action, status, 
+                             protocol, endpoint=None, request_data=None, 
+                             response_data=None, error_message=None, duration_ms=None):
+    """Record service activity to database for monitoring and audit."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO service_activity 
+            (order_id, service_name, service_type, action, status, protocol, 
+             endpoint, request_data, response_data, error_message, duration_ms)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (
+            order_id, service_name, service_type, action, status, protocol,
+            endpoint,
+            json.dumps(request_data) if request_data else None,
+            json.dumps(response_data) if response_data else None,
+            error_message, duration_ms
+        ))
+        conn.commit()
+        conn.close()
+        logger.info("Service activity recorded", service=service_name, order_id=order_id, status=status)
+    except Exception as e:
+        logger.error("Failed to record service activity", error=str(e))
+
+# =============================================================================
 # STEP EXECUTORS
 # =============================================================================
 
@@ -369,6 +398,44 @@ class StepExecutors:
         """Validate customer — checks local DB first, then CMS SOAP as secondary."""
         try:
             customer_id = data.get('client_id')
+            order_id = data.get('order_id')
+
+            # Publish CMS validation started notification
+            publish_message('swifttrack.notifications', 'realtime.cms_update', {
+                'type': 'cms_validation_started',
+                'order_id': order_id,
+                'client_id': customer_id,
+                'service': 'CMS',
+                'protocol': 'SOAP/XML',
+                'stage': 'Validating Customer',
+                'message': f'CMS Service: Validating customer #{customer_id}',
+                'timestamp': datetime.utcnow().isoformat()
+            })
+            
+            print("")
+            print("╔══════════════════════════════════════════════════════════════╗")
+            print("║  📋 CMS SERVICE - STARTED                                    ║")
+            print("╠══════════════════════════════════════════════════════════════╣")
+            print(f"║  Order ID    : {order_id:<45} ║")
+            print(f"║  Customer ID : {customer_id:<45} ║")
+            print("║  Action      : Validating Customer                           ║")
+            print("║  Protocol    : SOAP/XML                                      ║")
+            print("║  Status      : ⏳ IN PROGRESS                                ║")
+            print("╚══════════════════════════════════════════════════════════════╝")
+            print("")
+
+            # Record CMS started activity
+            start_time = time.time()
+            record_service_activity(
+                order_id=order_id,
+                service_name='CMS',
+                service_type='Customer Validation',
+                action='validate_customer',
+                status='started',
+                protocol='SOAP/XML',
+                endpoint=f'{CMS_SERVICE_URL}/soap',
+                request_data={'customer_id': customer_id}
+            )
 
             # Primary: check customer exists in local DB
             conn = get_db_connection()
@@ -381,6 +448,44 @@ class StepExecutors:
 
             if client:
                 logger.info("Customer validated via local DB", customer_id=customer_id)
+                # Publish CMS validation success notification
+                publish_message('swifttrack.notifications', 'realtime.cms_update', {
+                    'type': 'cms_validation_success',
+                    'order_id': order_id,
+                    'client_id': customer_id,
+                    'service': 'CMS',
+                    'protocol': 'SOAP/XML',
+                    'stage': 'Customer Validated',
+                    'message': f'CMS Service: Customer #{customer_id} validated successfully',
+                    'timestamp': datetime.utcnow().isoformat()
+                })
+                
+                print("")
+                print("╔══════════════════════════════════════════════════════════════╗")
+                print("║  📋 CMS SERVICE - SUCCESS ✅                                 ║")
+                print("╠══════════════════════════════════════════════════════════════╣")
+                print(f"║  Order ID    : {order_id:<45} ║")
+                print(f"║  Customer ID : {customer_id:<45} ║")
+                print("║  Action      : Customer Validated                            ║")
+                print("║  Protocol    : SOAP/XML                                      ║")
+                print("║  Status      : ✅ VALIDATED                                  ║")
+                print("╚══════════════════════════════════════════════════════════════╝")
+                print("")
+                
+                # Record CMS success activity
+                duration = int((time.time() - start_time) * 1000)
+                record_service_activity(
+                    order_id=order_id,
+                    service_name='CMS',
+                    service_type='Customer Validation',
+                    action='validate_customer',
+                    status='success',
+                    protocol='SOAP/XML',
+                    endpoint='Local Database',
+                    response_data={'customer_id': customer_id, 'validated': True},
+                    duration_ms=duration
+                )
+                
                 return {'success': True, 'message': 'Customer validated'}
 
             # Secondary: try CMS SOAP service
@@ -403,6 +508,30 @@ class StepExecutors:
                 )
 
                 if response.status_code == 200 and '<cms:is_valid>true</cms:is_valid>' in response.text:
+                    # Publish CMS SOAP validation success
+                    publish_message('swifttrack.notifications', 'realtime.cms_update', {
+                        'type': 'cms_validation_success',
+                        'order_id': order_id,
+                        'client_id': customer_id,
+                        'service': 'CMS',
+                        'protocol': 'SOAP/XML',
+                        'stage': 'Customer Validated via SOAP',
+                        'message': f'CMS SOAP Service: Customer #{customer_id} validated',
+                        'timestamp': datetime.utcnow().isoformat()
+                    })
+                    # Record CMS SOAP success
+                    duration = int((time.time() - start_time) * 1000)
+                    record_service_activity(
+                        order_id=order_id,
+                        service_name='CMS',
+                        service_type='Customer Validation',
+                        action='validate_customer',
+                        status='success',
+                        protocol='SOAP/XML',
+                        endpoint=f'{CMS_SERVICE_URL}/soap',
+                        response_data={'customer_id': customer_id, 'validated': True, 'source': 'SOAP'},
+                        duration_ms=duration
+                    )
                     return {'success': True, 'message': 'Customer validated via CMS'}
             except Exception as cms_err:
                 logger.warning("CMS validation unavailable, proceeding", error=str(cms_err))
@@ -410,6 +539,30 @@ class StepExecutors:
             # Fallback: allow order to proceed if customer not found (demo mode)
             logger.warning("Customer not found in DB, proceeding in demo mode",
                            customer_id=customer_id)
+            # Publish fallback notification
+            publish_message('swifttrack.notifications', 'realtime.cms_update', {
+                'type': 'cms_validation_skipped',
+                'order_id': order_id,
+                'client_id': customer_id,
+                'service': 'CMS',
+                'protocol': 'SOAP/XML',
+                'stage': 'Validation Skipped',
+                'message': f'CMS Service: Customer validation skipped (demo mode)',
+                'timestamp': datetime.utcnow().isoformat()
+            })
+            # Record CMS skipped activity
+            duration = int((time.time() - start_time) * 1000)
+            record_service_activity(
+                order_id=order_id,
+                service_name='CMS',
+                service_type='Customer Validation',
+                action='validate_customer',
+                status='skipped',
+                protocol='SOAP/XML',
+                endpoint=f'{CMS_SERVICE_URL}/soap',
+                response_data={'customer_id': customer_id, 'reason': 'demo_mode'},
+                duration_ms=duration
+            )
             return {'success': True, 'message': 'Customer validation skipped (demo mode)'}
 
         except Exception as e:
@@ -423,6 +576,42 @@ class StepExecutors:
         try:
             order_id = data.get('order_id')
             
+            # Publish WMS reservation started notification
+            publish_message('swifttrack.notifications', 'realtime.wms_update', {
+                'type': 'wms_reservation_started',
+                'order_id': order_id,
+                'service': 'WMS',
+                'protocol': 'RabbitMQ',
+                'stage': 'Reserving Slot',
+                'message': f'WMS Service: Reserving warehouse slot for order #{order_id}',
+                'timestamp': datetime.utcnow().isoformat()
+            })
+            
+            print("")
+            print("╔══════════════════════════════════════════════════════════════╗")
+            print("║  🏭 WMS SERVICE - STARTED                                    ║")
+            print("╠══════════════════════════════════════════════════════════════╣")
+            print(f"║  Order ID    : {order_id:<45} ║")
+            print("║  Action      : Reserving Warehouse Slot                      ║")
+            print("║  Protocol    : AMQP (RabbitMQ)                               ║")
+            print("║  Queue       : wms_orders                                    ║")
+            print("║  Status      : ⏳ IN PROGRESS                                ║")
+            print("╚══════════════════════════════════════════════════════════════╝")
+            print("")
+            
+            # Record WMS started activity
+            wms_start_time = time.time()
+            record_service_activity(
+                order_id=order_id,
+                service_name='WMS',
+                service_type='Warehouse Slot Reservation',
+                action='reserve_slot',
+                status='started',
+                protocol='AMQP (RabbitMQ)',
+                endpoint='wms_orders queue',
+                request_data={'order_id': order_id, 'action': 'reserve'}
+            )
+            
             publish_message('swifttrack.warehouse', 'warehouse.receive', {
                 'order_id': order_id,
                 'package_type': data.get('package_type', 'standard'),
@@ -430,10 +619,68 @@ class StepExecutors:
                 'action': 'reserve'
             })
             
+            # Publish WMS reservation success notification
+            publish_message('swifttrack.notifications', 'realtime.wms_update', {
+                'type': 'wms_reservation_success',
+                'order_id': order_id,
+                'service': 'WMS',
+                'protocol': 'RabbitMQ',
+                'stage': 'Slot Reserved',
+                'message': f'WMS Service: Warehouse slot reserved for order #{order_id}',
+                'timestamp': datetime.utcnow().isoformat()
+            })
+            
+            print("")
+            print("╔══════════════════════════════════════════════════════════════╗")
+            print("║  🏭 WMS SERVICE - SUCCESS ✅                                  ║")
+            print("╠══════════════════════════════════════════════════════════════╣")
+            print(f"║  Order ID    : {order_id:<45} ║")
+            print("║  Action      : Warehouse Slot Reserved                       ║")
+            print("║  Protocol    : AMQP (RabbitMQ)                               ║")
+            print("║  Queue       : wms_orders                                    ║")
+            print("║  Status      : ✅ RESERVED                                   ║")
+            print("╚══════════════════════════════════════════════════════════════╝")
+            print("")
+            
+            # Record WMS success activity
+            wms_duration = int((time.time() - wms_start_time) * 1000)
+            record_service_activity(
+                order_id=order_id,
+                service_name='WMS',
+                service_type='Warehouse Slot Reservation',
+                action='reserve_slot',
+                status='success',
+                protocol='AMQP (RabbitMQ)',
+                endpoint='wms_orders queue',
+                response_data={'order_id': order_id, 'slot_reserved': True},
+                duration_ms=wms_duration
+            )
+            
             return {'success': True, 'message': 'Warehouse slot reserved'}
             
         except Exception as e:
             logger.error("Warehouse reservation failed", error=str(e))
+            # Publish WMS error notification
+            publish_message('swifttrack.notifications', 'realtime.wms_update', {
+                'type': 'wms_reservation_error',
+                'order_id': data.get('order_id'),
+                'service': 'WMS',
+                'protocol': 'RabbitMQ',
+                'stage': 'Error',
+                'message': f'WMS Service: Reservation failed - {str(e)}',
+                'timestamp': datetime.utcnow().isoformat()
+            })
+            # Record WMS failed activity
+            record_service_activity(
+                order_id=data.get('order_id'),
+                service_name='WMS',
+                service_type='Warehouse Slot Reservation',
+                action='reserve_slot',
+                status='failed',
+                protocol='AMQP (RabbitMQ)',
+                endpoint='wms_orders queue',
+                error_message=str(e)
+            )
             return {'success': False, 'message': str(e)}
     
     @staticmethod
@@ -456,6 +703,44 @@ class StepExecutors:
     @staticmethod
     def optimize_route(data):
         """Calculate optimized route via ROS REST service (best-effort)."""
+        order_id = data.get('order_id')
+        
+        # Publish ROS route optimization started notification
+        publish_message('swifttrack.notifications', 'realtime.ros_update', {
+            'type': 'ros_optimization_started',
+            'order_id': order_id,
+            'service': 'ROS',
+            'protocol': 'REST/JSON',
+            'stage': 'Calculating Route',
+            'message': f'ROS Service: Calculating optimized route for order #{order_id}',
+            'timestamp': datetime.utcnow().isoformat()
+        })
+        
+        print("")
+        print("╔══════════════════════════════════════════════════════════════╗")
+        print("║  🛣️  ROS SERVICE - STARTED                                    ║")
+        print("╠══════════════════════════════════════════════════════════════╣")
+        print(f"║  Order ID    : {order_id:<45} ║")
+        print("║  Action      : Calculating Optimized Route                   ║")
+        print("║  Protocol    : REST/JSON                                     ║")
+        print("║  Endpoint    : /route/optimize                               ║")
+        print("║  Status      : ⏳ IN PROGRESS                                ║")
+        print("╚══════════════════════════════════════════════════════════════╝")
+        print("")
+        
+        # Record ROS started activity
+        ros_start_time = time.time()
+        record_service_activity(
+            order_id=order_id,
+            service_name='ROS',
+            service_type='Route Optimization',
+            action='optimize_route',
+            status='started',
+            protocol='REST/JSON',
+            endpoint=f'{ROS_SERVICE_URL}/route/optimize',
+            request_data={'order_id': order_id, 'driver_id': data.get('driver_id')}
+        )
+        
         try:
             response = requests.post(
                 f"{ROS_SERVICE_URL}/route/optimize",
@@ -470,6 +755,52 @@ class StepExecutors:
 
             if response.status_code == 200:
                 route_data = response.json()
+                metrics = route_data.get('metrics', {})
+                
+                # Publish ROS route optimization success notification
+                publish_message('swifttrack.notifications', 'realtime.ros_update', {
+                    'type': 'ros_optimization_success',
+                    'order_id': order_id,
+                    'service': 'ROS',
+                    'protocol': 'REST/JSON',
+                    'stage': 'Route Optimized',
+                    'route_id': route_data.get('route_id'),
+                    'distance_km': metrics.get('total_distance_km'),
+                    'estimated_duration': metrics.get('estimated_duration_minutes'),
+                    'algorithm': route_data.get('optimization_algorithm', 'nearest_neighbor'),
+                    'message': f'ROS Service: Route optimized - {metrics.get("total_distance_km", 0)}km, ~{metrics.get("estimated_duration_minutes", 0)} mins',
+                    'timestamp': datetime.utcnow().isoformat()
+                })
+                
+                distance = metrics.get('total_distance_km', 0)
+                duration = metrics.get('estimated_duration_minutes', 0)
+                print("")
+                print("╔══════════════════════════════════════════════════════════════╗")
+                print("║  🛣️  ROS SERVICE - SUCCESS ✅                                 ║")
+                print("╠══════════════════════════════════════════════════════════════╣")
+                print(f"║  Order ID    : {order_id:<45} ║")
+                print("║  Action      : Route Optimized                              ║")
+                print("║  Protocol    : REST/JSON                                     ║")
+                print(f"║  Distance    : {str(distance) + ' km':<45} ║")
+                print(f"║  ETA         : {str(duration) + ' mins':<45} ║")
+                print("║  Status      : ✅ OPTIMIZED                                 ║")
+                print("╚══════════════════════════════════════════════════════════════╝")
+                print("")
+                
+                # Record ROS success activity
+                ros_duration = int((time.time() - ros_start_time) * 1000)
+                record_service_activity(
+                    order_id=order_id,
+                    service_name='ROS',
+                    service_type='Route Optimization',
+                    action='optimize_route',
+                    status='success',
+                    protocol='REST/JSON',
+                    endpoint=f'{ROS_SERVICE_URL}/route/optimize',
+                    response_data={'route_id': route_data.get('route_id'), 'distance_km': distance, 'duration_mins': duration},
+                    duration_ms=ros_duration
+                )
+                
                 return {
                     'success': True,
                     'message': 'Route optimized',
@@ -479,11 +810,83 @@ class StepExecutors:
                 # Non-fatal: let saga proceed without route optimisation
                 logger.warning("Route optimization returned non-200, proceeding",
                                status=response.status_code)
+                publish_message('swifttrack.notifications', 'realtime.ros_update', {
+                    'type': 'ros_optimization_skipped',
+                    'order_id': order_id,
+                    'service': 'ROS',
+                    'protocol': 'REST/JSON',
+                    'stage': 'Optimization Skipped',
+                    'message': f'ROS Service: Route optimization skipped (service returned {response.status_code})',
+                    'timestamp': datetime.utcnow().isoformat()
+                })
+                
+                print("")
+                print("╔══════════════════════════════════════════════════════════════╗")
+                print("║  🛣️  ROS SERVICE - SKIPPED ⚠️                                 ║")
+                print("╠══════════════════════════════════════════════════════════════╣")
+                print(f"║  Order ID    : {order_id:<45} ║")
+                print("║  Action      : Route Optimization Skipped                   ║")
+                print("║  Protocol    : REST/JSON                                     ║")
+                print(f"║  Reason      : Service returned {response.status_code:<28} ║")
+                print("║  Status      : ⚠️ SKIPPED                                   ║")
+                print("╚══════════════════════════════════════════════════════════════╝")
+                print("")
+                
+                # Record ROS skipped activity
+                ros_duration = int((time.time() - ros_start_time) * 1000)
+                record_service_activity(
+                    order_id=order_id,
+                    service_name='ROS',
+                    service_type='Route Optimization',
+                    action='optimize_route',
+                    status='skipped',
+                    protocol='REST/JSON',
+                    endpoint=f'{ROS_SERVICE_URL}/route/optimize',
+                    response_data={'status_code': response.status_code, 'reason': 'non_200_response'},
+                    duration_ms=ros_duration
+                )
+                
                 return {'success': True, 'message': 'Route optimization skipped (non-200)'}
 
         except Exception as e:
             # ROS unavailable — non-fatal, order can still be assigned and proceed
             logger.warning("Route optimization unavailable, proceeding", error=str(e))
+            publish_message('swifttrack.notifications', 'realtime.ros_update', {
+                'type': 'ros_optimization_error',
+                'order_id': order_id,
+                'service': 'ROS',
+                'protocol': 'REST/JSON',
+                'stage': 'Optimization Error',
+                'message': f'ROS Service: Route optimization unavailable, proceeding without',
+                'timestamp': datetime.utcnow().isoformat()
+            })
+            
+            print("")
+            print("╔══════════════════════════════════════════════════════════════╗")
+            print("║  🛣️  ROS SERVICE - ERROR ❌                                   ║")
+            print("╠══════════════════════════════════════════════════════════════╣")
+            print(f"║  Order ID    : {order_id:<45} ║")
+            print("║  Action      : Route Optimization Failed                     ║")
+            print("║  Protocol    : REST/JSON                                     ║")
+            print(f"║  Error       : {str(e)[:45]:<45} ║")
+            print("║  Status      : ❌ ERROR (proceeding without route)          ║")
+            print("╚══════════════════════════════════════════════════════════════╝")
+            print("")
+            
+            # Record ROS failed activity
+            ros_duration = int((time.time() - ros_start_time) * 1000)
+            record_service_activity(
+                order_id=order_id,
+                service_name='ROS',
+                service_type='Route Optimization',
+                action='optimize_route',
+                status='failed',
+                protocol='REST/JSON',
+                endpoint=f'{ROS_SERVICE_URL}/route/optimize',
+                error_message=str(e),
+                duration_ms=ros_duration
+            )
+            
             return {'success': True, 'message': f'Route optimization skipped: {str(e)}'}
     
     @staticmethod

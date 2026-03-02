@@ -267,6 +267,21 @@ def correlation_middleware(app, service_name: str):
         return response
 
 
+class CorrelationMiddleware:
+    """
+    Class-based wrapper for correlation_middleware function.
+    
+    Usage:
+        from flask import Flask
+        
+        app = Flask(__name__)
+        CorrelationMiddleware(app)
+    """
+    
+    def __init__(self, app, service_name: str = 'unknown'):
+        correlation_middleware(app, service_name)
+
+
 # =============================================================================
 # HTTP CLIENT INTEGRATION
 # =============================================================================
