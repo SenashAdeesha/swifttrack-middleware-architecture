@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import {
   Search, Filter, Eye, X, Package, Calendar, ChevronDown, Download,
   RefreshCw, Copy, ArrowUpDown, MapPin, Clock, Truck,
+  Server, Users, Route, Warehouse,
 } from 'lucide-react';
 import { Card, CardHeader, CardTitle, Badge, Button, Modal, EmptyState, TableSkeleton } from '../../components/common';
 import { ordersAPI, wsService } from '../../services/api';
@@ -25,6 +26,16 @@ const Orders = () => {
   // Middleware pipeline sub-stages per order: { orderId: 'ready'|'loaded'|'dispatched' }
   const [middlewareStages, setMiddlewareStages] = useState({});
   const [flashIds, setFlashIds] = useState(new Set());
+  
+  // Service integration status tracking
+  const [cmsStatus, setCmsStatus] = useState({}); // { orderId: { status, message, timestamp } }
+  const [rosStatus, setRosStatus] = useState({}); // { orderId: { status, message, timestamp, eta, distance } }
+  const [wmsStatus, setWmsStatus] = useState({}); // { orderId: { status, message, timestamp } }
+  
+  // Service detail modal
+  const [showServiceModal, setShowServiceModal] = useState(false);
+  const [serviceModalOrder, setServiceModalOrder] = useState(null);
+  const [serviceModalType, setServiceModalType] = useState('cms'); // 'cms' | 'ros' | 'wms'
 
   useEffect(() => { fetchOrders(); }, [user?.id]);
 
@@ -110,12 +121,65 @@ const Orders = () => {
       fetchOrders();
     });
 
+    // CMS Service (SOAP/XML) updates
+    const unsubCms = wsService.on('cms_update', (data) => {
+      const orderId = String(data.orderId || data.order_id);
+      if (!orderId) return;
+      setCmsStatus(prev => ({
+        ...prev,
+        [orderId]: {
+          status: data.status || data.event_type,
+          message: data.message || data.description,
+          timestamp: new Date().toLocaleTimeString(),
+          protocol: 'SOAP/XML'
+        }
+      }));
+      triggerFlash(orderId);
+    });
+
+    // ROS Service (REST/JSON) updates
+    const unsubRos = wsService.on('ros_update', (data) => {
+      const orderId = String(data.orderId || data.order_id);
+      if (!orderId) return;
+      setRosStatus(prev => ({
+        ...prev,
+        [orderId]: {
+          status: data.status || data.event_type,
+          message: data.message || data.description,
+          timestamp: new Date().toLocaleTimeString(),
+          protocol: 'REST/JSON',
+          eta: data.eta,
+          distance: data.distance
+        }
+      }));
+      triggerFlash(orderId);
+    });
+
+    // WMS Service (RabbitMQ) updates
+    const unsubWms = wsService.on('wms_update', (data) => {
+      const orderId = String(data.orderId || data.order_id);
+      if (!orderId) return;
+      setWmsStatus(prev => ({
+        ...prev,
+        [orderId]: {
+          status: data.status || data.event_type,
+          message: data.message || data.description,
+          timestamp: new Date().toLocaleTimeString(),
+          protocol: 'RabbitMQ'
+        }
+      }));
+      triggerFlash(orderId);
+    });
+
     return () => {
       unsubStatus();
       unsubDelivered();
       unsubMiddleware();
       unsubDriverAssigned();
       unsubNewOrder();
+      unsubCms();
+      unsubRos();
+      unsubWms();
     };
   }, [user?.id, user?.role]);
 
@@ -169,12 +233,27 @@ const Orders = () => {
   };
 
   const getStatusColor = (status) => {
-    const colors = { pending: 'warning', confirmed: 'warning', in_warehouse: 'warning', out_for_delivery: 'primary', delivered: 'success', failed: 'danger', cancelled: 'gray' };
+    const colors = { 
+      pending: 'warning', 
+      confirmed: 'warning', 
+      in_warehouse: 'warning', 
+      out_for_delivery: 'primary', 
+      delivered: 'success', 
+      failed: 'danger', 
+      cancelled: 'gray',
+      accepted_by_driver: 'success',
+      rejected_by_driver: 'danger',
+    };
     return colors[status] || 'gray';
   };
 
   const getStatusLabel = (status) => {
-    const labels = { confirmed: 'Pending', in_warehouse: 'Pending' };
+    const labels = { 
+      confirmed: 'Pending', 
+      in_warehouse: 'Pending',
+      accepted_by_driver: 'Driver Accepted',
+      rejected_by_driver: 'Driver Rejected',
+    };
     if (labels[status]) return labels[status];
     return status?.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()) || status;
   };
@@ -386,6 +465,22 @@ const Orders = () => {
                         {['pending', 'in_warehouse'].includes(order.status) && (
                           <button onClick={() => { setCancellingId(order.id); setShowCancelModal(true); }} className="p-2 text-gray-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 rounded-lg" title="Cancel"><X className="w-4 h-4" /></button>
                         )}
+                        {/* Service Integration Buttons */}
+                        <button onClick={() => { setServiceModalOrder(order); setServiceModalType('cms'); setShowServiceModal(true); }} 
+                          className={`p-2 rounded-lg transition-all ${cmsStatus[String(order.id)] ? 'text-purple-600 hover:bg-purple-50 dark:hover:bg-purple-900/20' : 'text-gray-400 hover:text-purple-600 hover:bg-purple-50 dark:hover:bg-purple-900/20'}`} 
+                          title="CMS Service (SOAP/XML)">
+                          <Users className="w-4 h-4" />
+                        </button>
+                        <button onClick={() => { setServiceModalOrder(order); setServiceModalType('ros'); setShowServiceModal(true); }} 
+                          className={`p-2 rounded-lg transition-all ${rosStatus[String(order.id)] ? 'text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20' : 'text-gray-400 hover:text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20'}`} 
+                          title="ROS Service (REST/JSON)">
+                          <Route className="w-4 h-4" />
+                        </button>
+                        <button onClick={() => { setServiceModalOrder(order); setServiceModalType('wms'); setShowServiceModal(true); }} 
+                          className={`p-2 rounded-lg transition-all ${wmsStatus[String(order.id)] ? 'text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/20' : 'text-gray-400 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/20'}`} 
+                          title="WMS Service (RabbitMQ)">
+                          <Warehouse className="w-4 h-4" />
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -410,13 +505,9 @@ const Orders = () => {
               </div>
               <Badge variant={getStatusColor(selectedOrder.status)} size="lg">{getStatusLabel(selectedOrder.status)}</Badge>
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="p-4 bg-blue-50 dark:bg-blue-900/20 rounded-xl">
-                <p className="text-xs text-blue-600 dark:text-blue-400 font-semibold uppercase mb-1">Pickup</p>
-                <p className="text-sm text-gray-900 dark:text-white">{selectedOrder.pickupAddress || 'N/A'}</p>
-              </div>
+            <div className="grid grid-cols-1 gap-4">
               <div className="p-4 bg-green-50 dark:bg-green-900/20 rounded-xl">
-                <p className="text-xs text-green-600 dark:text-green-400 font-semibold uppercase mb-1">Delivery</p>
+                <p className="text-xs text-green-600 dark:text-green-400 font-semibold uppercase mb-1">Delivery Address</p>
                 <p className="text-sm text-gray-900 dark:text-white">{selectedOrder.deliveryAddress}</p>
               </div>
             </div>
@@ -454,6 +545,160 @@ const Orders = () => {
               <Button fullWidth variant="outline" onClick={() => setShowDetailModal(false)}>Close</Button>
               <Link to={`/client/tracking/${selectedOrder.id}`} className="flex-1"><Button fullWidth icon={Truck}>Track Order</Button></Link>
             </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Service Integration Modal */}
+      <Modal isOpen={showServiceModal} onClose={() => setShowServiceModal(false)} 
+        title={serviceModalType === 'cms' ? 'CMS Service Details' : serviceModalType === 'ros' ? 'ROS Service Details' : 'WMS Service Details'} size="md">
+        {serviceModalOrder && (
+          <div className="space-y-4">
+            {/* Service Header */}
+            <div className={`p-4 rounded-xl ${
+              serviceModalType === 'cms' ? 'bg-purple-50 dark:bg-purple-900/20 border border-purple-200 dark:border-purple-800' :
+              serviceModalType === 'ros' ? 'bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800' :
+              'bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800'
+            }`}>
+              <div className="flex items-center gap-3 mb-3">
+                <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${
+                  serviceModalType === 'cms' ? 'bg-purple-100 dark:bg-purple-900/50' :
+                  serviceModalType === 'ros' ? 'bg-blue-100 dark:bg-blue-900/50' :
+                  'bg-amber-100 dark:bg-amber-900/50'
+                }`}>
+                  {serviceModalType === 'cms' ? <Users className="w-6 h-6 text-purple-600" /> :
+                   serviceModalType === 'ros' ? <Route className="w-6 h-6 text-blue-600" /> :
+                   <Warehouse className="w-6 h-6 text-amber-600" />}
+                </div>
+                <div>
+                  <h4 className="font-bold text-gray-900 dark:text-white">
+                    {serviceModalType === 'cms' ? 'Customer Management Service' :
+                     serviceModalType === 'ros' ? 'Route Optimization Service' :
+                     'Warehouse Management Service'}
+                  </h4>
+                  <span className={`text-xs font-mono px-2 py-0.5 rounded ${
+                    serviceModalType === 'cms' ? 'bg-purple-200 dark:bg-purple-800 text-purple-700 dark:text-purple-300' :
+                    serviceModalType === 'ros' ? 'bg-blue-200 dark:bg-blue-800 text-blue-700 dark:text-blue-300' :
+                    'bg-amber-200 dark:bg-amber-800 text-amber-700 dark:text-amber-300'
+                  }`}>
+                    {serviceModalType === 'cms' ? 'SOAP/XML' : serviceModalType === 'ros' ? 'REST/JSON' : 'RabbitMQ Messaging'}
+                  </span>
+                </div>
+              </div>
+              <p className="text-sm text-gray-600 dark:text-gray-400">
+                {serviceModalType === 'cms' ? 'Validates customer information and credentials using SOAP protocol with XML data format.' :
+                 serviceModalType === 'ros' ? 'Calculates optimal delivery routes and estimates using RESTful API with JSON responses.' :
+                 'Manages warehouse inventory and order processing via RabbitMQ message queue.'}
+              </p>
+            </div>
+
+            {/* Service Status for this Order */}
+            <div className="p-4 bg-gray-50 dark:bg-slate-700 rounded-xl">
+              <p className="text-xs text-gray-500 uppercase font-bold mb-3">Order #{serviceModalOrder.id} Status</p>
+              {serviceModalType === 'cms' && cmsStatus[String(serviceModalOrder.id)] ? (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Status</span>
+                    <Badge variant={cmsStatus[String(serviceModalOrder.id)].status?.includes('success') || cmsStatus[String(serviceModalOrder.id)].status?.includes('validated') ? 'success' : 'warning'}>
+                      {cmsStatus[String(serviceModalOrder.id)].status?.replace(/_/g, ' ')}
+                    </Badge>
+                  </div>
+                  {cmsStatus[String(serviceModalOrder.id)].message && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Message</span>
+                      <span className="text-sm text-gray-600 dark:text-gray-400">{cmsStatus[String(serviceModalOrder.id)].message}</span>
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Last Updated</span>
+                    <span className="text-sm text-gray-500">{cmsStatus[String(serviceModalOrder.id)].timestamp}</span>
+                  </div>
+                </div>
+              ) : serviceModalType === 'ros' && rosStatus[String(serviceModalOrder.id)] ? (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Status</span>
+                    <Badge variant={rosStatus[String(serviceModalOrder.id)].status?.includes('success') || rosStatus[String(serviceModalOrder.id)].status?.includes('optimized') ? 'success' : rosStatus[String(serviceModalOrder.id)].status?.includes('skipped') ? 'secondary' : 'warning'}>
+                      {rosStatus[String(serviceModalOrder.id)].status?.replace(/_/g, ' ')}
+                    </Badge>
+                  </div>
+                  {rosStatus[String(serviceModalOrder.id)].eta && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Estimated Time</span>
+                      <span className="text-sm text-blue-600 dark:text-blue-400 font-medium">{rosStatus[String(serviceModalOrder.id)].eta}</span>
+                    </div>
+                  )}
+                  {rosStatus[String(serviceModalOrder.id)].distance && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Distance</span>
+                      <span className="text-sm text-gray-600 dark:text-gray-400">{rosStatus[String(serviceModalOrder.id)].distance}</span>
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Last Updated</span>
+                    <span className="text-sm text-gray-500">{rosStatus[String(serviceModalOrder.id)].timestamp}</span>
+                  </div>
+                </div>
+              ) : serviceModalType === 'wms' && wmsStatus[String(serviceModalOrder.id)] ? (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Status</span>
+                    <Badge variant={wmsStatus[String(serviceModalOrder.id)].status?.includes('success') || wmsStatus[String(serviceModalOrder.id)].status?.includes('processed') ? 'success' : 'warning'}>
+                      {wmsStatus[String(serviceModalOrder.id)].status?.replace(/_/g, ' ')}
+                    </Badge>
+                  </div>
+                  {wmsStatus[String(serviceModalOrder.id)].message && (
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Message</span>
+                      <span className="text-sm text-gray-600 dark:text-gray-400">{wmsStatus[String(serviceModalOrder.id)].message}</span>
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Last Updated</span>
+                    <span className="text-sm text-gray-500">{wmsStatus[String(serviceModalOrder.id)].timestamp}</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center py-4">
+                  <Server className="w-10 h-10 text-gray-300 dark:text-gray-600 mx-auto mb-2" />
+                  <p className="text-sm text-gray-500">No service activity recorded yet</p>
+                  <p className="text-xs text-gray-400 mt-1">Updates will appear when the order is processed</p>
+                </div>
+              )}
+            </div>
+
+            {/* Service Technical Details */}
+            <div className="p-4 border border-gray-200 dark:border-slate-600 rounded-xl">
+              <p className="text-xs text-gray-500 uppercase font-bold mb-3">Technical Details</p>
+              <div className="space-y-2 text-sm">
+                {serviceModalType === 'cms' && (
+                  <>
+                    <div className="flex justify-between"><span className="text-gray-500">Endpoint</span><span className="font-mono text-xs text-gray-700 dark:text-gray-300">:5003/soap</span></div>
+                    <div className="flex justify-between"><span className="text-gray-500">Protocol</span><span className="text-gray-700 dark:text-gray-300">SOAP 1.1</span></div>
+                    <div className="flex justify-between"><span className="text-gray-500">Data Format</span><span className="text-gray-700 dark:text-gray-300">XML</span></div>
+                    <div className="flex justify-between"><span className="text-gray-500">WSDL</span><span className="font-mono text-xs text-gray-700 dark:text-gray-300">:5003/wsdl</span></div>
+                  </>
+                )}
+                {serviceModalType === 'ros' && (
+                  <>
+                    <div className="flex justify-between"><span className="text-gray-500">Endpoint</span><span className="font-mono text-xs text-gray-700 dark:text-gray-300">:5004/route/optimize</span></div>
+                    <div className="flex justify-between"><span className="text-gray-500">Protocol</span><span className="text-gray-700 dark:text-gray-300">REST HTTP</span></div>
+                    <div className="flex justify-between"><span className="text-gray-500">Data Format</span><span className="text-gray-700 dark:text-gray-300">JSON</span></div>
+                    <div className="flex justify-between"><span className="text-gray-500">Methods</span><span className="text-gray-700 dark:text-gray-300">GET, POST</span></div>
+                  </>
+                )}
+                {serviceModalType === 'wms' && (
+                  <>
+                    <div className="flex justify-between"><span className="text-gray-500">Queue</span><span className="font-mono text-xs text-gray-700 dark:text-gray-300">wms_orders</span></div>
+                    <div className="flex justify-between"><span className="text-gray-500">Protocol</span><span className="text-gray-700 dark:text-gray-300">AMQP</span></div>
+                    <div className="flex justify-between"><span className="text-gray-500">Broker</span><span className="text-gray-700 dark:text-gray-300">RabbitMQ</span></div>
+                    <div className="flex justify-between"><span className="text-gray-500">Port</span><span className="font-mono text-xs text-gray-700 dark:text-gray-300">5672</span></div>
+                  </>
+                )}
+              </div>
+            </div>
+
+            <Button fullWidth variant="outline" onClick={() => setShowServiceModal(false)}>Close</Button>
           </div>
         )}
       </Modal>
