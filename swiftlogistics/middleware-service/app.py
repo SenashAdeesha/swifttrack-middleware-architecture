@@ -310,7 +310,6 @@ def get_orders():
             order_dict['driverPhone'] = order['driver_phone']
             order_dict['vehicleType'] = order['driver_vehicle_type']
             order_dict['vehiclePlate'] = order['driver_vehicle_plate']
-            order_dict['pickupAddress'] = order['pickup_address']
             order_dict['deliveryAddress'] = order['delivery_address']
             order_dict['packageWeight'] = float(order['package_weight']) if order['package_weight'] else 0
             order_dict['packageType'] = order['package_type']
@@ -374,7 +373,6 @@ def get_order(order_id):
         order_dict['driverPhone'] = order['driver_phone']
         order_dict['vehicleType'] = order['driver_vehicle_type']
         order_dict['vehiclePlate'] = order['driver_vehicle_plate']
-        order_dict['pickupAddress'] = order['pickup_address']
         order_dict['deliveryAddress'] = order['delivery_address']
         order_dict['packageWeight'] = float(order['package_weight']) if order['package_weight'] else 0
         order_dict['packageType'] = order['package_type']
@@ -443,23 +441,31 @@ def create_order():
         else:
             estimated_delivery = datetime.utcnow() + timedelta(days=5)
         
+        # Extract delivery coordinates from request
+        delivery_lat = data.get('deliveryLat')
+        delivery_lng = data.get('deliveryLng')
+        
+        logger.info(f"Creating order with delivery coordinates: ({delivery_lat}, {delivery_lng})")
+        
         # Create order in database
         cursor.execute("""
-            INSERT INTO orders (id, client_id, pickup_address, delivery_address, 
+            INSERT INTO orders (id, client_id, delivery_address, 
                               package_weight, package_type, priority, status, 
-                              estimated_delivery, special_instructions)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending', %s, %s)
+                              estimated_delivery, special_instructions,
+                              delivery_lat, delivery_lng)
+            VALUES (%s, %s, %s, %s, %s, %s, 'pending', %s, %s, %s, %s)
             RETURNING *
         """, (
             order_id,
             client_id,
-            data.get('pickupAddress', ''),
             data.get('deliveryAddress', ''),
             data.get('packageWeight', 0),
             data.get('packageType', 'small_box'),
             priority,
             estimated_delivery,
-            data.get('specialInstructions', '')
+            data.get('specialInstructions', ''),
+            delivery_lat,
+            delivery_lng
         ))
         
         order = cursor.fetchone()
@@ -490,7 +496,6 @@ def create_order():
         saga_id = initiate_saga('order.create', {
             'order_id': order_id,
             'client_id': client_id,
-            'pickup_address': data.get('pickupAddress', ''),
             'delivery_address': data.get('deliveryAddress', ''),
             'package_type': data.get('packageType', 'small_box'),
             'priority': priority
@@ -534,7 +539,6 @@ def create_order():
         order_response['id'] = order_id
         order_response['clientId'] = str(client_id)
         order_response['clientName'] = client_name
-        order_response['pickupAddress'] = order['pickup_address']
         order_response['deliveryAddress'] = order['delivery_address']
         order_response['packageWeight'] = float(order['package_weight']) if order['package_weight'] else 0
         order_response['packageType'] = order['package_type']
@@ -940,11 +944,9 @@ def start_delivery(order_id):
     =========================================================================
     START DELIVERY
     =========================================================================
-    Called by the driver when they click "Start Delivery" on the Route page.
-    Does NOT change the order status (already out_for_delivery) but writes a
-    dated timeline entry and broadcasts a timeline_update via WebSocket so
-    client and admin tracking pages can reflect the exact moment the driver
-    started heading to the customer.
+    Called by the driver when they click "Start Delivery" / "Navigate" on
+    the Route page. Changes order status to 'out_for_delivery' and broadcasts
+    via WebSocket so all dashboards (client, driver, admin) see the update.
     =========================================================================
     """
     try:
@@ -958,9 +960,17 @@ def start_delivery(order_id):
             conn.close()
             return jsonify({'error': 'Order not found'}), 404
 
+        # Update order status to out_for_delivery
+        cursor.execute("""
+            UPDATE orders 
+            SET status = 'out_for_delivery', 
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+        """, (order_id,))
+
         # Write timeline entry
         cursor.execute(
-            "INSERT INTO order_timeline (order_id, status, description) VALUES (%s, 'started_delivery', 'Driver has started the delivery')",
+            "INSERT INTO order_timeline (order_id, status, description) VALUES (%s, 'out_for_delivery', 'Driver has started the delivery - Out for delivery')",
             (order_id,)
         )
 
@@ -976,13 +986,25 @@ def start_delivery(order_id):
 
         now_iso = datetime.utcnow().isoformat()
 
-        # Broadcast timeline update so tracking pages update in real-time
+        # Broadcast order_status_update so all dashboards update in real-time
+        publish_message('swifttrack.notifications', 'realtime.update', {
+            'type': 'order_status_update',
+            'order_id': order_id,
+            'status': 'out_for_delivery',
+            'data': {
+                'client_user_id': client_user_id,
+                'driver_id': str(order['driver_id']) if order['driver_id'] else None,
+                'started_at': now_iso
+            }
+        })
+
+        # Also send a timeline_update for tracking pages
         publish_message('swifttrack.notifications', 'realtime.update', {
             'type': 'timeline_update',
             'order_id': order_id,
             'entry': {
-                'status': 'started_delivery',
-                'description': 'Driver has started the delivery',
+                'status': 'out_for_delivery',
+                'description': 'Driver has started the delivery - Out for delivery',
                 'time': now_iso
             },
             'data': {
@@ -991,12 +1013,179 @@ def start_delivery(order_id):
             }
         })
 
-        logger.info("Driver started delivery", order_id=order_id)
-        return jsonify({'message': 'Delivery started', 'time': now_iso}), 200
+        logger.info("Driver started delivery - status set to out_for_delivery", order_id=order_id)
+        return jsonify({'message': 'Delivery started', 'status': 'out_for_delivery', 'time': now_iso}), 200
 
     except Exception as e:
-        logger.error("Failed to record delivery start", error=str(e), order_id=order_id)
-        return jsonify({'error': 'Failed to record delivery start'}), 500
+        logger.error("Failed to start delivery", error=str(e), order_id=order_id)
+        return jsonify({'error': 'Failed to start delivery'}), 500
+
+
+@app.route('/orders/<order_id>/accept', methods=['POST'])
+def accept_order(order_id):
+    """
+    =========================================================================
+    ACCEPT ORDER - DRIVER ACTION
+    =========================================================================
+    Called when driver accepts an assigned order.
+    Changes status to 'accepted_by_driver' and broadcasts to all dashboards.
+    =========================================================================
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT id, client_id, driver_id, status FROM orders WHERE id = %s", (order_id,))
+        order = cursor.fetchone()
+
+        if not order:
+            conn.close()
+            return jsonify({'error': 'Order not found'}), 404
+
+        # Update order status to accepted_by_driver
+        cursor.execute("""
+            UPDATE orders 
+            SET status = 'accepted_by_driver', 
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+        """, (order_id,))
+
+        # Write timeline entry
+        cursor.execute(
+            "INSERT INTO order_timeline (order_id, status, description) VALUES (%s, 'accepted_by_driver', 'Order accepted by driver - Ready for pickup')",
+            (order_id,)
+        )
+
+        # Resolve client user_id
+        client_user_id = None
+        if order.get('client_id'):
+            cursor.execute("SELECT user_id FROM clients WHERE id = %s", (order['client_id'],))
+            client_record = cursor.fetchone()
+            client_user_id = str(client_record['user_id']) if client_record else None
+
+        conn.commit()
+        conn.close()
+
+        now_iso = datetime.utcnow().isoformat()
+
+        # Broadcast order_status_update so all dashboards update in real-time
+        publish_message('swifttrack.notifications', 'realtime.update', {
+            'type': 'order_status_update',
+            'order_id': order_id,
+            'status': 'accepted_by_driver',
+            'data': {
+                'client_user_id': client_user_id,
+                'driver_id': str(order['driver_id']) if order['driver_id'] else None,
+                'accepted_at': now_iso
+            }
+        })
+
+        # Notify client
+        if client_user_id:
+            publish_message('swifttrack.notifications', 'realtime.notification', {
+                'type': 'notification',
+                'user_id': client_user_id,
+                'title': 'Order Accepted',
+                'message': f'Your order {order_id} has been accepted by the driver!',
+                'notification_type': 'success'
+            })
+
+        logger.info("Driver accepted order", order_id=order_id)
+        return jsonify({'message': 'Order accepted', 'status': 'accepted_by_driver', 'time': now_iso}), 200
+
+    except Exception as e:
+        logger.error("Failed to accept order", error=str(e), order_id=order_id)
+        return jsonify({'error': 'Failed to accept order'}), 500
+
+
+@app.route('/orders/<order_id>/reject', methods=['POST'])
+def reject_order(order_id):
+    """
+    =========================================================================
+    REJECT ORDER - DRIVER ACTION
+    =========================================================================
+    Called when driver rejects an assigned order.
+    Changes status to 'rejected_by_driver', unassigns driver, and broadcasts.
+    =========================================================================
+    """
+    try:
+        data = request.get_json() or {}
+        rejection_reason = data.get('reason', 'No reason provided')
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("SELECT id, client_id, driver_id, status FROM orders WHERE id = %s", (order_id,))
+        order = cursor.fetchone()
+
+        if not order:
+            conn.close()
+            return jsonify({'error': 'Order not found'}), 404
+
+        # Update order status to rejected_by_driver and unassign driver
+        cursor.execute("""
+            UPDATE orders 
+            SET status = 'rejected_by_driver', 
+                driver_id = NULL,
+                rejection_reason = %s,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+        """, (rejection_reason, order_id))
+
+        # Write timeline entry
+        cursor.execute(
+            "INSERT INTO order_timeline (order_id, status, description) VALUES (%s, 'rejected_by_driver', %s)",
+            (order_id, f'Order rejected by driver - Reason: {rejection_reason}')
+        )
+
+        # Resolve client user_id
+        client_user_id = None
+        if order.get('client_id'):
+            cursor.execute("SELECT user_id FROM clients WHERE id = %s", (order['client_id'],))
+            client_record = cursor.fetchone()
+            client_user_id = str(client_record['user_id']) if client_record else None
+
+        # Set driver back to available if they were the assigned driver
+        if order.get('driver_id'):
+            cursor.execute("""
+                UPDATE drivers SET status = 'available', updated_at = CURRENT_TIMESTAMP
+                WHERE id = %s
+            """, (order['driver_id'],))
+
+        conn.commit()
+        conn.close()
+
+        now_iso = datetime.utcnow().isoformat()
+
+        # Broadcast order_status_update so all dashboards update in real-time
+        publish_message('swifttrack.notifications', 'realtime.update', {
+            'type': 'order_status_update',
+            'order_id': order_id,
+            'status': 'rejected_by_driver',
+            'data': {
+                'client_user_id': client_user_id,
+                'driver_id': str(order['driver_id']) if order['driver_id'] else None,
+                'rejection_reason': rejection_reason,
+                'rejected_at': now_iso
+            }
+        })
+
+        # Notify client
+        if client_user_id:
+            publish_message('swifttrack.notifications', 'realtime.notification', {
+                'type': 'notification',
+                'user_id': client_user_id,
+                'title': 'Order Reassignment Needed',
+                'message': f'Your order {order_id} needs a new driver. We are working on it.',
+                'notification_type': 'warning'
+            })
+
+        logger.info("Driver rejected order", order_id=order_id, reason=rejection_reason)
+        return jsonify({'message': 'Order rejected', 'status': 'rejected_by_driver', 'time': now_iso}), 200
+
+    except Exception as e:
+        logger.error("Failed to reject order", error=str(e), order_id=order_id)
+        return jsonify({'error': 'Failed to reject order'}), 500
 
 
 @app.route('/orders/<order_id>/assign', methods=['POST'])
@@ -1019,9 +1208,9 @@ def assign_driver_to_order(order_id):
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Resolve driver record
+        # Resolve driver record (include user_id for notifications)
         cursor.execute("""
-            SELECT d.id, u.name, u.phone, d.vehicle_type, d.vehicle_plate
+            SELECT d.id, d.user_id, u.name, u.phone, d.vehicle_type, d.vehicle_plate
             FROM drivers d JOIN users u ON d.user_id = u.id
             WHERE d.id::text = %s OR d.user_id::text = %s
         """, (driver_id, driver_id))
@@ -1067,11 +1256,13 @@ def assign_driver_to_order(order_id):
         conn.commit()
         conn.close()
         
-        # Notify driver of new assignment
+        # Notify driver of new assignment (include all actor IDs)
         publish_message('swifttrack.notifications', 'realtime.assigned', {
             'type': 'driver_assigned',
             'order_id': order_id,
             'driver_id': str(driver['id']),
+            'driver_user_id': str(driver['user_id']),
+            'client_user_id': client_user_id,
             'pickup_address': order.get('pickup_address', ''),
             'delivery_address': order.get('delivery_address', ''),
             'driver_name': driver['name'],
