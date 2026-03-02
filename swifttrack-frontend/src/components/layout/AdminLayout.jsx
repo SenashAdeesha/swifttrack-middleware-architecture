@@ -8,6 +8,8 @@ import {
   BarChart3,
   Shield,
   Navigation,
+  Bell,
+  Activity,
 } from 'lucide-react';
 import Sidebar from './Sidebar';
 import Header from './Header';
@@ -17,8 +19,10 @@ const adminNavItems = [
   { path: '/admin/users',     label: 'User Management', icon: Users           },
   { path: '/admin/orders',    label: 'Order Monitoring', icon: Package         },
   { path: '/admin/tracking',  label: 'Order Tracking',  icon: Navigation      },
+  { path: '/admin/service-activity', label: 'Service Activity', icon: Activity },
   { path: '/admin/logs',      label: 'System Logs',      icon: FileText        },
   { path: '/admin/analytics', label: 'Analytics',        icon: BarChart3       },
+  { path: '/admin/notifications', label: 'Notifications', icon: Bell           },
 ];
 
 const AdminLayout = () => {
