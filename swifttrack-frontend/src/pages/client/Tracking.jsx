@@ -59,6 +59,10 @@ const Tracking = () => {
   const [wsConnected,    setWsConnected]    = useState(false);
   const [autoRefresh,    setAutoRefresh]    = useState(true);
 
+  // CMS/ROS Service Integration status
+  const [cmsStatus, setCmsStatus] = useState(null);
+  const [rosStatus, setRosStatus] = useState(null);
+
   // modals
   const [showShareModal,        setShowShareModal]        = useState(false);
   const [showSupportModal,      setShowSupportModal]      = useState(false);
@@ -144,6 +148,34 @@ const Tracking = () => {
     }
   }, [orderId]);
 
+  // WS: CMS (SOAP/XML) service update
+  const handleCmsUpdate = useCallback((data) => {
+    const id = String(data.orderId || data.order_id);
+    if (String(orderId) === id) {
+      setCmsStatus({
+        status: data.status || data.event_type,
+        message: data.message || data.description,
+        timestamp: new Date().toLocaleTimeString(),
+        protocol: 'SOAP/XML'
+      });
+    }
+  }, [orderId]);
+
+  // WS: ROS (REST/JSON) service update
+  const handleRosUpdate = useCallback((data) => {
+    const id = String(data.orderId || data.order_id);
+    if (String(orderId) === id) {
+      setRosStatus({
+        status: data.status || data.event_type,
+        message: data.message || data.description,
+        timestamp: new Date().toLocaleTimeString(),
+        protocol: 'REST/JSON',
+        eta: data.eta,
+        distance: data.distance
+      });
+    }
+  }, [orderId]);
+
   useEffect(() => {
     wsService.connect();
     if (orderId) wsService.subscribeToOrder(orderId);
@@ -152,8 +184,10 @@ const Tracking = () => {
     const u2 = wsService.on('driver_location', handleDriverLocation);
     const u3 = wsService.on('delivery_completed', handleDeliveryCompleted);
     const u4 = wsService.on('timeline_update', handleTimelineUpdate);
-    return () => { if (orderId) wsService.unsubscribeFromOrder(orderId); u1(); u2(); u3(); u4(); };
-  }, [orderId, handleStatusUpdate, handleDriverLocation, handleDeliveryCompleted, handleTimelineUpdate]);
+    const u5 = wsService.on('cms_update', handleCmsUpdate);
+    const u6 = wsService.on('ros_update', handleRosUpdate);
+    return () => { if (orderId) wsService.unsubscribeFromOrder(orderId); u1(); u2(); u3(); u4(); u5(); u6(); };
+  }, [orderId, handleStatusUpdate, handleDriverLocation, handleDeliveryCompleted, handleTimelineUpdate, handleCmsUpdate, handleRosUpdate]);
 
   // -- Fetch order detail when orderId changes --------------------------------
   const fetchDetail = useCallback(async (silent = false) => {
@@ -533,12 +567,8 @@ const Tracking = () => {
                     </div>
                   </div>
                   <div className="space-y-2">
-                    <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-xl">
-                      <p className="text-[10px] text-blue-600 font-bold">FROM</p>
-                      <p className="text-xs text-gray-700 dark:text-gray-300 mt-1">{order.pickupAddress||order.pickup_address||'Warehouse'}</p>
-                    </div>
                     <div className="p-3 bg-green-50 dark:bg-green-900/20 rounded-xl">
-                      <p className="text-[10px] text-green-600 font-bold">TO</p>
+                      <p className="text-[10px] text-green-600 font-bold">DELIVERY ADDRESS</p>
                       <p className="text-xs text-gray-700 dark:text-gray-300 mt-1">{order.deliveryAddress||order.delivery_address}</p>
                     </div>
                   </div>
@@ -554,6 +584,64 @@ const Tracking = () => {
                   <p className="text-xs text-gray-600 dark:text-gray-400">{instructions||'No special instructions'}</p>
                 </div>
               </Card>
+
+              {/* CMS/ROS Service Integration Status */}
+              {(cmsStatus || rosStatus) && (
+                <Card>
+                  <div className="p-4">
+                    <p className="text-[10px] text-gray-500 uppercase font-bold mb-3">Service Integration</p>
+                    <div className="space-y-2">
+                      {cmsStatus && (
+                        <div className="p-3 bg-purple-50 dark:bg-purple-900/20 rounded-xl">
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-xs font-semibold text-purple-700 dark:text-purple-300">CMS Service</span>
+                            <span className="text-[10px] font-mono bg-purple-200 dark:bg-purple-800 text-purple-600 dark:text-purple-400 px-1.5 py-0.5 rounded">SOAP/XML</span>
+                          </div>
+                          <p className="text-[10px] text-gray-600 dark:text-gray-400">Customer Validation</p>
+                          <div className="flex items-center justify-between mt-1">
+                            <span className={`text-[10px] font-medium ${
+                              cmsStatus.status?.includes('success') || cmsStatus.status?.includes('validated') 
+                                ? 'text-green-600' 
+                                : cmsStatus.status?.includes('error') 
+                                  ? 'text-red-600' 
+                                  : 'text-yellow-600'
+                            }`}>
+                              {cmsStatus.status?.replace(/_/g, ' ').replace('cms validation ', '').toUpperCase()}
+                            </span>
+                            <span className="text-[10px] text-gray-400">{cmsStatus.timestamp}</span>
+                          </div>
+                        </div>
+                      )}
+                      {rosStatus && (
+                        <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-xl">
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-xs font-semibold text-blue-700 dark:text-blue-300">ROS Service</span>
+                            <span className="text-[10px] font-mono bg-blue-200 dark:bg-blue-800 text-blue-600 dark:text-blue-400 px-1.5 py-0.5 rounded">REST/JSON</span>
+                          </div>
+                          <p className="text-[10px] text-gray-600 dark:text-gray-400">Route Optimization</p>
+                          <div className="flex items-center justify-between mt-1">
+                            <span className={`text-[10px] font-medium ${
+                              rosStatus.status?.includes('success') || rosStatus.status?.includes('optimized') 
+                                ? 'text-green-600' 
+                                : rosStatus.status?.includes('error') 
+                                  ? 'text-red-600' 
+                                  : rosStatus.status?.includes('skipped')
+                                    ? 'text-gray-500'
+                                    : 'text-yellow-600'
+                            }`}>
+                              {rosStatus.status?.replace(/_/g, ' ').replace('ros optimization ', '').toUpperCase()}
+                            </span>
+                            <span className="text-[10px] text-gray-400">{rosStatus.timestamp}</span>
+                          </div>
+                          {rosStatus.eta && (
+                            <p className="text-[10px] text-blue-600 mt-1">ETA: {rosStatus.eta}</p>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </Card>
+              )}
             </div>
           </div>
         </div>
