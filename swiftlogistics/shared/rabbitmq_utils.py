@@ -99,10 +99,9 @@ class RabbitMQPublisher:
         
         # Circuit breaker for connection failures
         if enable_circuit_breaker:
-            self.circuit_breaker = CircuitBreakerFactory.get_circuit_breaker(
+            self.circuit_breaker = CircuitBreakerFactory.create(
                 'rabbitmq-publisher',
-                failure_threshold=5,
-                recovery_timeout=30.0
+                preset='message_queue'
             )
         else:
             self.circuit_breaker = None
