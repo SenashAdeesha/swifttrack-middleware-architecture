@@ -3,7 +3,21 @@ SwiftTrack WebSocket Service
 Real-time communication service for order tracking and notifications
 """
 
+# Pre-resolve DNS before monkey patching (eventlet patches socket)
 import os
+import socket
+RABBITMQ_HOST_IP = None
+try:
+    _host = os.environ.get('RABBITMQ_HOST', 'rabbitmq')
+    RABBITMQ_HOST_IP = socket.gethostbyname(_host)
+    print(f"[Init] Pre-resolved RabbitMQ host {_host} to {RABBITMQ_HOST_IP}")
+except Exception as e:
+    print(f"[Init] Could not pre-resolve RabbitMQ host: {e}")
+    RABBITMQ_HOST_IP = os.environ.get('RABBITMQ_HOST', 'rabbitmq')
+
+import eventlet
+eventlet.monkey_patch()
+
 import json
 import threading
 from datetime import datetime
@@ -18,7 +32,7 @@ from psycopg2.extras import RealDictCursor
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'websocket_secret_key_2026')
 CORS(app, origins="*")
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 
 # Database configuration
 DB_CONFIG = {
@@ -123,20 +137,26 @@ def handle_connect():
 def handle_authenticate(data):
     """Handle client authentication"""
     token = data.get('token')
+    user_id = data.get('userId') or data.get('user_id')
+    role = data.get('role')
     
-    if not token:
-        emit('auth_error', {'error': 'No token provided'})
+    # Support direct userId/role auth (from frontend) or JWT token auth
+    if user_id and role:
+        # Direct auth with userId and role
+        print(f"[Auth] Direct auth: user_id={user_id}, role={role}")
+    elif token:
+        # JWT token auth
+        user_data = verify_token(token)
+        if not user_data:
+            emit('auth_error', {'error': 'Invalid or expired token'})
+            disconnect()
+            return
+        user_id = user_data.get('user_id')
+        role = user_data.get('role')
+    else:
+        emit('auth_error', {'error': 'No authentication provided'})
         disconnect()
         return
-    
-    user_data = verify_token(token)
-    if not user_data:
-        emit('auth_error', {'error': 'Invalid or expired token'})
-        disconnect()
-        return
-    
-    user_id = user_data.get('user_id')
-    role = user_data.get('role')
     
     # Store client info
     connected_clients[request.sid] = {
@@ -160,7 +180,7 @@ def handle_authenticate(data):
             room_connections[room] = []
         room_connections[room].append(request.sid)
     
-    print(f"User {user_id} ({role}) authenticated and joined rooms: {rooms}")
+    print(f"[Auth] User {user_id} ({role}) authenticated and joined rooms: {rooms}")
     
     emit('authenticated', {
         'status': 'success',
@@ -421,6 +441,7 @@ def broadcast_middleware_update(order_id, stage, client_user_id=None, label=None
 
     socketio.emit('middleware_update', event_data, room=f'order_{order_id}')
     socketio.emit('middleware_update', event_data, room='admin_room')
+    socketio.emit('middleware_update', event_data, room='clients_room')  # Also broadcast to all clients
     if client_user_id:
         socketio.emit('middleware_update', event_data, room=f'user_{client_user_id}')
 
@@ -525,6 +546,128 @@ def broadcast_timeline_update(order_id, entry, client_user_id=None, data=None):
     print(f"Broadcasted timeline update for order {order_id}: {entry.get('status')}")
 
 
+def broadcast_cms_update(order_id, event_type, stage, message, client_id=None, data=None):
+    """Broadcast CMS (SOAP/XML) service updates to relevant clients."""
+    event_data = {
+        'event': 'cms_update',
+        'order_id': order_id,
+        'orderId': order_id,
+        'type': event_type,
+        'service': 'CMS',
+        'protocol': 'SOAP/XML',
+        'stage': stage,
+        'message': message,
+        'data': data or {},
+        'timestamp': datetime.utcnow().isoformat()
+    }
+    
+    # Emit to order room
+    socketio.emit('cms_update', event_data, room=f'order_{order_id}')
+    # Emit to admin room (admins see all service updates)
+    socketio.emit('cms_update', event_data, room='admin_room')
+    # Emit to clients room
+    socketio.emit('cms_update', event_data, room='clients_room')
+    # Emit to specific client if provided
+    if client_id:
+        socketio.emit('cms_update', event_data, room=f'user_{client_id}')
+    
+    print(f"")
+    print(f"╔══════════════════════════════════════════════════════════════╗")
+    print(f"║  📋 CMS SERVICE (SOAP/XML)                                   ║")
+    print(f"╠══════════════════════════════════════════════════════════════╣")
+    print(f"║  Order ID    : {order_id:<45} ║")
+    print(f"║  Event       : {event_type:<45} ║")
+    print(f"║  Stage       : {stage:<45} ║")
+    print(f"║  Message     : {message[:45]:<45} ║")
+    print(f"║  Protocol    : SOAP/XML                                      ║")
+    print(f"║  Endpoint    : :5003/soap                                    ║")
+    print(f"╚══════════════════════════════════════════════════════════════╝")
+    print(f"")
+
+
+def broadcast_ros_update(order_id, event_type, stage, message, route_id=None, distance_km=None, estimated_duration=None, data=None):
+    """Broadcast ROS (REST/JSON) service updates to relevant clients."""
+    event_data = {
+        'event': 'ros_update',
+        'order_id': order_id,
+        'orderId': order_id,
+        'type': event_type,
+        'service': 'ROS',
+        'protocol': 'REST/JSON',
+        'stage': stage,
+        'message': message,
+        'route_id': route_id,
+        'distance_km': distance_km,
+        'estimated_duration': estimated_duration,
+        'data': data or {},
+        'timestamp': datetime.utcnow().isoformat()
+    }
+    
+    # Emit to order room
+    socketio.emit('ros_update', event_data, room=f'order_{order_id}')
+    # Emit to admin room
+    socketio.emit('ros_update', event_data, room='admin_room')
+    # Emit to clients room
+    socketio.emit('ros_update', event_data, room='clients_room')
+    # Emit to drivers room (they need route info)
+    socketio.emit('ros_update', event_data, room='drivers_room')
+    
+    print(f"")
+    print(f"╔══════════════════════════════════════════════════════════════╗")
+    print(f"║  🛣️  ROS SERVICE (REST/JSON)                                  ║")
+    print(f"╠══════════════════════════════════════════════════════════════╣")
+    print(f"║  Order ID    : {order_id:<45} ║")
+    print(f"║  Event       : {event_type:<45} ║")
+    print(f"║  Stage       : {stage:<45} ║")
+    print(f"║  Message     : {message[:45]:<45} ║")
+    print(f"║  Protocol    : REST/JSON                                     ║")
+    print(f"║  Endpoint    : :5004/route/optimize                          ║")
+    if distance_km:
+        print(f"║  Distance    : {str(distance_km) + ' km':<45} ║")
+    if estimated_duration:
+        print(f"║  ETA         : {str(estimated_duration):<45} ║")
+    print(f"╚══════════════════════════════════════════════════════════════╝")
+    print(f"")
+
+
+def broadcast_wms_update(order_id, event_type, stage, message, data=None):
+    """Broadcast WMS (RabbitMQ messaging) service updates to relevant clients."""
+    event_data = {
+        'event': 'wms_update',
+        'order_id': order_id,
+        'orderId': order_id,
+        'type': event_type,
+        'status': event_type,
+        'service': 'WMS',
+        'protocol': 'RabbitMQ',
+        'stage': stage,
+        'message': message,
+        'description': message,
+        'data': data or {},
+        'timestamp': datetime.utcnow().isoformat()
+    }
+    
+    # Emit to order room
+    socketio.emit('wms_update', event_data, room=f'order_{order_id}')
+    # Emit to admin room
+    socketio.emit('wms_update', event_data, room='admin_room')
+    # Emit to clients room
+    socketio.emit('wms_update', event_data, room='clients_room')
+    
+    print(f"")
+    print(f"╔══════════════════════════════════════════════════════════════╗")
+    print(f"║  🏭 WMS SERVICE (RabbitMQ)                                   ║")
+    print(f"╠══════════════════════════════════════════════════════════════╣")
+    print(f"║  Order ID    : {order_id:<45} ║")
+    print(f"║  Event       : {event_type:<45} ║")
+    print(f"║  Stage       : {stage:<45} ║")
+    print(f"║  Message     : {message[:45]:<45} ║")
+    print(f"║  Protocol    : AMQP (RabbitMQ)                               ║")
+    print(f"║  Queue       : wms_orders                                    ║")
+    print(f"╚══════════════════════════════════════════════════════════════╝")
+    print(f"")
+
+
 # ============ RabbitMQ Consumer ============
 
 def process_rabbitmq_message(ch, method, properties, body):
@@ -555,12 +698,13 @@ def process_rabbitmq_message(ch, method, properties, body):
             broadcast_order_status_update(order_id, status, client_user_id, data)
 
         elif event_type == 'middleware_update':
-            order_id = data.get('order_id') or message.get('order_id')
+            order_id = message.get('order_id') or message.get('orderId') or data.get('order_id')
             stage = message.get('stage') or data.get('stage')
-            client_user_id = data.get('client_user_id')
+            client_user_id = data.get('client_user_id') or message.get('client_user_id')
+            print(f"[WS] middleware_update: order={order_id}, stage={stage}")
             broadcast_middleware_update(
                 order_id, stage, client_user_id,
-                label=data.get('label'),
+                label=data.get('label') or message.get('label'),
                 warehouse_location=data.get('warehouse_location')
             )
 
@@ -598,6 +742,31 @@ def process_rabbitmq_message(ch, method, properties, body):
             if data.get('order_id'):
                 socketio.emit('driver_location', data, room=f'order_{data["order_id"]}')
 
+        # ============ CMS (SOAP/XML) Service Updates ============
+        elif event_type in ['cms_validation_started', 'cms_validation_success', 'cms_validation_skipped']:
+            order_id = message.get('order_id')
+            client_id = message.get('client_id')
+            stage = message.get('stage', 'CMS Processing')
+            msg = message.get('message', f'CMS Service: Processing order #{order_id}')
+            broadcast_cms_update(order_id, event_type, stage, msg, client_id, message)
+
+        # ============ ROS (REST/JSON) Service Updates ============
+        elif event_type in ['ros_optimization_started', 'ros_optimization_success', 'ros_optimization_skipped', 'ros_optimization_error']:
+            order_id = message.get('order_id')
+            stage = message.get('stage', 'ROS Processing')
+            msg = message.get('message', f'ROS Service: Processing order #{order_id}')
+            route_id = message.get('route_id')
+            distance_km = message.get('distance_km')
+            estimated_duration = message.get('estimated_duration')
+            broadcast_ros_update(order_id, event_type, stage, msg, route_id, distance_km, estimated_duration, message)
+
+        # ============ WMS (RabbitMQ) Service Updates ============
+        elif event_type in ['wms_reservation_started', 'wms_reservation_success', 'wms_reservation_error', 'wms_processed']:
+            order_id = message.get('order_id')
+            stage = message.get('stage', 'WMS Processing')
+            msg = message.get('message', f'WMS Service: Processing order #{order_id}')
+            broadcast_wms_update(order_id, event_type, stage, msg, message)
+
         else:
             print(f"Unknown event type: {event_type}")
 
@@ -610,15 +779,23 @@ def process_rabbitmq_message(ch, method, properties, body):
 
 def start_rabbitmq_consumer():
     """Start RabbitMQ consumer in background thread"""
+    import threading
+    
+    # Use pre-resolved IP address
+    rabbitmq_ip = RABBITMQ_HOST_IP
+    print(f"[RabbitMQ] Using host: {rabbitmq_ip}")
+    
     def consume():
+        print("[RabbitMQ] Starting consumer thread...")
         while True:
             try:
+                print("[RabbitMQ] Attempting to connect...")
                 credentials = pika.PlainCredentials(
                     RABBITMQ_CONFIG['username'],
                     RABBITMQ_CONFIG['password']
                 )
                 connection = pika.BlockingConnection(pika.ConnectionParameters(
-                    host=RABBITMQ_CONFIG['host'],
+                    host=rabbitmq_ip,  # Use resolved IP
                     port=RABBITMQ_CONFIG['port'],
                     virtual_host=RABBITMQ_CONFIG['virtual_host'],
                     credentials=credentials,
@@ -627,7 +804,7 @@ def start_rabbitmq_consumer():
                 ))
                 channel = connection.channel()
                 
-                # Declare exchange
+                # Declare topic exchange (matches current RabbitMQ state)
                 channel.exchange_declare(
                     exchange='swifttrack.notifications',
                     exchange_type='topic',
@@ -638,27 +815,11 @@ def start_rabbitmq_consumer():
                 result = channel.queue_declare(queue='websocket_queue', durable=True)
                 queue_name = result.method.queue
                 
-                # Bind to all notification events
+                # Bind to all notification events using topic pattern
                 channel.queue_bind(
                     exchange='swifttrack.notifications',
                     queue=queue_name,
-                    routing_key='order.*'
-                )
-                channel.queue_bind(
-                    exchange='swifttrack.notifications',
-                    queue=queue_name,
-                    routing_key='driver.*'
-                )
-                channel.queue_bind(
-                    exchange='swifttrack.notifications',
-                    queue=queue_name,
-                    routing_key='notification.*'
-                )
-                # Bind to real-time pipeline events published by WMS service
-                channel.queue_bind(
-                    exchange='swifttrack.notifications',
-                    queue=queue_name,
-                    routing_key='realtime.#'
+                    routing_key='#'  # Match all routing keys
                 )
                 
                 channel.basic_qos(prefetch_count=1)
@@ -667,16 +828,18 @@ def start_rabbitmq_consumer():
                     on_message_callback=process_rabbitmq_message
                 )
                 
-                print("WebSocket service RabbitMQ consumer started")
+                print("[RabbitMQ] WebSocket service consumer started successfully")
                 channel.start_consuming()
                 
             except Exception as e:
-                print(f"RabbitMQ connection error: {e}")
+                print(f"[RabbitMQ] Connection error: {e}")
                 import time
                 time.sleep(5)  # Wait before reconnecting
     
+    # Use a real OS thread for pika (it uses blocking I/O)
     consumer_thread = threading.Thread(target=consume, daemon=True)
     consumer_thread.start()
+    print("[RabbitMQ] Consumer thread spawned")
 
 
 # ============ REST API Endpoints (for internal service calls) ============
@@ -790,4 +953,4 @@ def send_to_room():
 if __name__ == '__main__':
     print("Starting SwiftTrack WebSocket Service...")
     start_rabbitmq_consumer()
-    socketio.run(app, host='0.0.0.0', port=5006, debug=False, allow_unsafe_werkzeug=True)
+    socketio.run(app, host='0.0.0.0', port=5006, debug=False)
