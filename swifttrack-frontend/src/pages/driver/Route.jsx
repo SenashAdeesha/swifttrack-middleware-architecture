@@ -4,7 +4,7 @@ import {
   CheckCircle, Circle, Phone, AlertTriangle, SkipForward,
   Flag, RefreshCw, Loader2, Package, Eye, Calendar,
   Truck, FileText, Hash, Timer, Play, Square,
-  ExternalLink, StickyNote, StopCircle, X,
+  ExternalLink, StickyNote, StopCircle, X, ThumbsUp, ThumbsDown,
 } from 'lucide-react';
 import { Card, Badge, Button, Modal } from '../../components/common';
 import { driverAPI, ordersAPI, wsService } from '../../services/api';
@@ -33,13 +33,15 @@ const haversineKm  = (lat1, lon1, lat2, lon2) => {
 const etaMin = (km) => Math.max(1, Math.round(km / 25 * 60)); // ~25 km/h city traffic
 
 const STATUS_META = {
-  delivered:        { label: 'Delivered',        color: 'text-green-600 dark:text-green-400',   bg: 'bg-green-50 dark:bg-green-900/20',   dot: 'bg-green-500' },
-  failed:           { label: 'Failed',            color: 'text-red-500',                          bg: 'bg-red-50 dark:bg-red-900/20',       dot: 'bg-red-500' },
-  cancelled:        { label: 'Cancelled',         color: 'text-gray-400',                         bg: 'bg-gray-50 dark:bg-slate-800',       dot: 'bg-gray-400' },
-  out_for_delivery: { label: 'Out for Delivery',  color: 'text-blue-600 dark:text-blue-400',     bg: 'bg-blue-50 dark:bg-blue-900/20',     dot: 'bg-blue-500' },
-  pending:          { label: 'Pending',           color: 'text-amber-600 dark:text-amber-400',   bg: 'bg-amber-50 dark:bg-amber-900/20',   dot: 'bg-amber-500' },
-  confirmed:        { label: 'Pending',           color: 'text-amber-600 dark:text-amber-400',   bg: 'bg-amber-50 dark:bg-amber-900/20',   dot: 'bg-amber-500' },
-  in_warehouse:     { label: 'Pending',           color: 'text-amber-600 dark:text-amber-400',   bg: 'bg-amber-50 dark:bg-amber-900/20',   dot: 'bg-amber-500' },
+  delivered:          { label: 'Delivered',          color: 'text-green-600 dark:text-green-400',   bg: 'bg-green-50 dark:bg-green-900/20',   dot: 'bg-green-500' },
+  failed:             { label: 'Failed',              color: 'text-red-500',                          bg: 'bg-red-50 dark:bg-red-900/20',       dot: 'bg-red-500' },
+  cancelled:          { label: 'Cancelled',           color: 'text-gray-400',                         bg: 'bg-gray-50 dark:bg-slate-800',       dot: 'bg-gray-400' },
+  out_for_delivery:   { label: 'Out for Delivery',    color: 'text-blue-600 dark:text-blue-400',     bg: 'bg-blue-50 dark:bg-blue-900/20',     dot: 'bg-blue-500' },
+  pending:            { label: 'Pending',             color: 'text-amber-600 dark:text-amber-400',   bg: 'bg-amber-50 dark:bg-amber-900/20',   dot: 'bg-amber-500' },
+  confirmed:          { label: 'Pending',             color: 'text-amber-600 dark:text-amber-400',   bg: 'bg-amber-50 dark:bg-amber-900/20',   dot: 'bg-amber-500' },
+  in_warehouse:       { label: 'Awaiting Pickup',     color: 'text-purple-600 dark:text-purple-400', bg: 'bg-purple-50 dark:bg-purple-900/20', dot: 'bg-purple-500' },
+  accepted_by_driver: { label: 'Accepted',            color: 'text-green-600 dark:text-green-400',   bg: 'bg-green-50 dark:bg-green-900/20',   dot: 'bg-green-500' },
+  rejected_by_driver: { label: 'Rejected',            color: 'text-red-500 dark:text-red-400',       bg: 'bg-red-50 dark:bg-red-900/20',       dot: 'bg-red-500' },
 };
 const getMeta = (s) => STATUS_META[s] ?? { label: s?.replace(/_/g,' ') ?? '\u2014', color: 'text-gray-500', bg: 'bg-gray-50', dot: 'bg-gray-400' };
 
@@ -76,8 +78,16 @@ const Route = () => {
   // Local override refs — once the driver marks a stop done/skipped these IDs
   // are locked and never reverted by a re-fetch, even if the DB write is still
   // in-flight.
-  const localDeliveredRef = useRef(new Set()); // orderId → permanently completed
-  const localSkippedRef   = useRef(new Set()); // orderId → permanently skipped
+  const localDeliveredRef      = useRef(new Set()); // orderId → permanently completed
+  const localSkippedRef        = useRef(new Set()); // orderId → permanently skipped
+  const localOutForDeliveryRef = useRef(new Set()); // orderId → started delivery (out_for_delivery)
+  const localAcceptedRef       = useRef(new Set()); // orderId → accepted by driver
+  const localRejectedRef       = useRef(new Set()); // orderId → rejected by driver
+
+  // Reject modal state
+  const [showRejectModal, setShowRejectModal] = useState(false);
+  const [rejectOrderId, setRejectOrderId] = useState(null);
+  const [rejectReason, setRejectReason] = useState('');
 
   const [distanceMap, setDistanceMap] = useState({}); // address → { km, mins } | { loading } | { error }
   const geocacheRef = useRef({}); // tracks addresses already fetched / in-flight
@@ -94,8 +104,9 @@ const Route = () => {
 
   const fmtWait = (s) => `${Math.floor(s/60).toString().padStart(2,'0')}:${(s%60).toString().padStart(2,'0')}`;
 
-  const skipReasons = ['Customer not home','Access restricted','Unsafe location','Wrong address','Customer requested reschedule','Other'];
+  const skipReasons = ['Recipient not home','Access restricted','Unsafe location','Wrong address','Recipient requested reschedule','Other'];
   const issueTypes  = ['Traffic / road closure','Vehicle problem','Package damaged','Wrong package loaded','Safety concern','Other'];
+  const rejectReasons = ['Too far away','Vehicle issue','Personal emergency','Schedule conflict','Other'];
 
   const fetchRoute = async () => {
     if (!user?.id) return;
@@ -104,36 +115,55 @@ const Route = () => {
       const res    = await driverAPI.getAssignments(user.id);
       const orders = res.data || [];
       const mapped = orders.map((order, i) => {
-        // Derive completed/skipped: always trust the local ref first so a
+        // Derive completed/skipped/out_for_delivery/accepted/rejected: always trust the local ref first so a
         // re-fetch can never undo what the driver already physically actioned.
-        const localDone    = localDeliveredRef.current.has(String(order.id));
-        const localSkipped = localSkippedRef.current.has(String(order.id));
-        const dbDone       = order.status === 'delivered';
-        const dbSkipped    = order.status === 'failed' || order.status === 'cancelled';
-        const completed    = localDone    || dbDone;
-        const skipped      = localSkipped || dbSkipped;
+        const localDone         = localDeliveredRef.current.has(String(order.id));
+        const localSkipped      = localSkippedRef.current.has(String(order.id));
+        const localOutForDel    = localOutForDeliveryRef.current.has(String(order.id));
+        const localAccepted     = localAcceptedRef.current.has(String(order.id));
+        const localRejected     = localRejectedRef.current.has(String(order.id));
+        const dbDone            = order.status === 'delivered';
+        const dbSkipped         = order.status === 'failed' || order.status === 'cancelled';
+        const dbOutForDelivery  = order.status === 'out_for_delivery';
+        const dbAccepted        = order.status === 'accepted_by_driver';
+        const dbRejected        = order.status === 'rejected_by_driver';
+        const completed         = localDone    || dbDone;
+        const skipped           = localSkipped || dbSkipped;
+        const outForDelivery    = localOutForDel || dbOutForDelivery;
+        const accepted          = localAccepted || dbAccepted;
+        const rejected          = localRejected || dbRejected;
+        
+        // Determine final status: completed > skipped > rejected > out_for_delivery > accepted > db status
+        let finalStatus = order.status;
+        if (completed) finalStatus = 'delivered';
+        else if (skipped) finalStatus = 'failed';
+        else if (rejected) finalStatus = 'rejected_by_driver';
+        else if (outForDelivery) finalStatus = 'out_for_delivery';
+        else if (accepted) finalStatus = 'accepted_by_driver';
+        
         return {
           id:                order.id,
           orderId:           order.id,
           stopNum:           i + 1,
-          customer:          order.customer_name    || order.customerName    || 'Customer',
+          recipient:         order.customer_name    || order.customerName    || 'Recipient',
           address:           order.delivery_address || order.deliveryAddress || 'Address not available',
-          pickupAddress:     order.pickup_address   || order.pickupAddress   || '\u2014',
           timeSlot:          order.estimated_delivery ? friendlyTime(order.estimated_delivery) : `${9+i}:00 AM`,
           estimatedDelivery: order.estimated_delivery || null,
           createdAt:         order.created_at || order.createdAt || null,
-          orderDate:         toDateStr(order.created_at || order.createdAt),
+          deliveryDate:      toDateStr(order.estimated_delivery),  // Filter by delivery date, not order date
           priority:          order.priority     || 'normal',
           packageType:       order.package_type || order.packageType || 'package',
-          status:            completed ? 'delivered' : skipped ? 'failed' : order.status,
+          status:            finalStatus,
           stopNote:          order.special_instructions || '',
           driverNote:        '',
           completed,
           skipped,
+          accepted,
+          rejected,
         };
       });
       setStops(mapped);
-      const first = mapped.find(s => !s.completed && !s.skipped);
+      const first = mapped.find(s => !s.completed && !s.skipped && !s.rejected);
       setActiveStopId(prev => {
         // Keep the current active stop unless it no longer exists in the new list
         if (prev && mapped.find(s => s.id === prev)) return prev;
@@ -148,8 +178,25 @@ const Route = () => {
 
   useEffect(() => {
     fetchRoute();
-    const unsub = wsService.on('new_assignment', () => { toast.success('New delivery assigned!'); fetchRoute(); });
-    return () => unsub?.();
+    
+    // Listen for new assignments
+    const unsubAssignment = wsService.on('new_assignment', () => { 
+      toast.success('New delivery assigned!'); 
+      fetchRoute(); 
+    });
+    
+    // Listen for order status updates to keep in sync
+    const unsubStatus = wsService.on('order_status_update', (data) => {
+      const { orderId, status } = data;
+      setStops(prev => prev.map(s => 
+        String(s.id) === String(orderId) ? { ...s, status } : s
+      ));
+    });
+    
+    return () => {
+      unsubAssignment?.();
+      unsubStatus?.();
+    };
   }, [user?.id]);
 
   // Geocode pending stop addresses and compute driving distance + ETA from
@@ -206,9 +253,9 @@ const Route = () => {
   const filteredStops = useMemo(() => {
     const td = todayStr(); const tm = tomorrowStr();
     return stops.filter(s => {
-      if (dateFilter === 'today')    return s.orderDate === td;
-      if (dateFilter === 'tomorrow') return s.orderDate === tm;
-      return s.orderDate !== td && s.orderDate !== tm;
+      if (dateFilter === 'today')    return s.deliveryDate === td;
+      if (dateFilter === 'tomorrow') return s.deliveryDate === tm;
+      return s.deliveryDate !== td && s.deliveryDate !== tm;
     });
   }, [stops, dateFilter]);
 
@@ -222,9 +269,9 @@ const Route = () => {
   const tabCounts = useMemo(() => {
     const td = todayStr(); const tm = tomorrowStr();
     return {
-      today:    stops.filter(s => s.orderDate === td).length,
-      tomorrow: stops.filter(s => s.orderDate === tm).length,
-      others:   stops.filter(s => s.orderDate !== td && s.orderDate !== tm).length,
+      today:    stops.filter(s => s.deliveryDate === td).length,
+      tomorrow: stops.filter(s => s.deliveryDate === tm).length,
+      others:   stops.filter(s => s.deliveryDate !== td && s.deliveryDate !== tm).length,
     };
   }, [stops]);
 
@@ -246,17 +293,45 @@ const Route = () => {
     setStopPhase('started');
     resetWait();
     setShowDeliveryModal(true);
-    // Record in DB so tracking pages show "Driver started delivery" immediately
+    
+    // Lock the stop locally BEFORE the API call so any concurrent re-fetch
+    // cannot revert it while the network request is still in-flight.
+    localOutForDeliveryRef.current.add(String(stop.orderId || stop.id));
+    
+    // Record in DB and update status to out_for_delivery
     try {
       await ordersAPI.startDelivery(stop.orderId || stop.id);
+      // Update local state to reflect out_for_delivery status
+      setStops(prev => prev.map(s => 
+        s.id === stop.id ? { ...s, status: 'out_for_delivery' } : s
+      ));
+      toast.success('Delivery started - Out for delivery');
     } catch (err) {
-      // Non-blocking — don't fail the UI if this fails
-      console.warn('Failed to record delivery start:', err);
+      console.warn('Failed to start delivery:', err);
+      // Remove from local ref if API call failed
+      localOutForDeliveryRef.current.delete(String(stop.orderId || stop.id));
+      toast.error('Failed to start delivery');
     }
   };
 
-  const handleNavigate = () => {
+  const handleNavigate = async () => {
     if (!activeStop) return;
+    
+    // Ensure status is updated to out_for_delivery when navigating
+    if (activeStop.status !== 'out_for_delivery' && activeStop.status !== 'delivered') {
+      // Lock locally first
+      localOutForDeliveryRef.current.add(String(activeStop.orderId || activeStop.id));
+      try {
+        await ordersAPI.startDelivery(activeStop.orderId || activeStop.id);
+        setStops(prev => prev.map(s => 
+          s.id === activeStop.id ? { ...s, status: 'out_for_delivery' } : s
+        ));
+      } catch (err) {
+        console.warn('Failed to update delivery status:', err);
+        // Don't remove from local ref - keep it locked since user is navigating
+      }
+    }
+    
     window.open(mapsUrl(activeStop.address), '_blank', 'noopener,noreferrer');
     setStopPhase('navigating');
     setShowDeliveryModal(false);  // close modal — card button becomes "I'm Arrived"
@@ -336,6 +411,52 @@ const Route = () => {
     toast.success(`ETA updated: ${etaMinutes} min`); setEtaMinutes('');
   };
 
+  // =========================================================================
+  // ACCEPT / REJECT ORDER HANDLERS
+  // =========================================================================
+  const handleAcceptOrder = async (stop, e) => {
+    e?.stopPropagation();
+    const orderId = stop.orderId || stop.id;
+    localAcceptedRef.current.add(String(orderId));
+    try {
+      await ordersAPI.acceptOrder(orderId);
+      const updated = stops.map(s => s.id === stop.id ? { ...s, status: 'accepted_by_driver', accepted: true } : s);
+      setStops(updated);
+      toast.success(`Order ${orderId} accepted!`);
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to accept order');
+      localAcceptedRef.current.delete(String(orderId));
+    }
+  };
+
+  const openRejectModal = (stop, e) => {
+    e?.stopPropagation();
+    setRejectOrderId(stop.orderId || stop.id);
+    setRejectReason('');
+    setShowRejectModal(true);
+  };
+
+  const handleRejectOrder = async () => {
+    if (!rejectReason) { toast.error('Please select a reason'); return; }
+    if (!rejectOrderId) return;
+    
+    localRejectedRef.current.add(String(rejectOrderId));
+    try {
+      await ordersAPI.rejectOrder(rejectOrderId, rejectReason);
+      const updated = stops.map(s => (s.orderId || s.id) === rejectOrderId ? { ...s, status: 'rejected_by_driver', rejected: true } : s);
+      setStops(updated);
+      setShowRejectModal(false);
+      setRejectReason('');
+      setRejectOrderId(null);
+      toast(`Order ${rejectOrderId} rejected.`, { icon: '❌' });
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to reject order');
+      localRejectedRef.current.delete(String(rejectOrderId));
+    }
+  };
+
   const openView = (stop, e) => { e?.stopPropagation(); setViewStop(stop); setShowViewModal(true); };
 
   return (
@@ -366,7 +487,7 @@ const Route = () => {
             onClick={() => {
               setDateFilter(tab.key);
               const td2=todayStr(), tm2=tomorrowStr();
-              const g = stops.filter(s => tab.key==='today'?s.orderDate===td2:tab.key==='tomorrow'?s.orderDate===tm2:s.orderDate!==td2&&s.orderDate!==tm2);
+              const g = stops.filter(s => tab.key==='today'?s.deliveryDate===td2:tab.key==='tomorrow'?s.deliveryDate===tm2:s.deliveryDate!==td2&&s.deliveryDate!==tm2);
               const f = g.find(s=>!s.completed&&!s.skipped)||g[0];
               setActiveStopId(f?.id||null); setStopPhase(null); setStatusFilter('all');
             }}
@@ -382,7 +503,7 @@ const Route = () => {
             </span>
           </button>
         ))}
-        <span className="text-xs text-gray-400 ml-1 flex items-center gap-1"><Calendar className="w-3.5 h-3.5"/>filtered by order date</span>
+        <span className="text-xs text-gray-400 ml-1 flex items-center gap-1"><Calendar className="w-3.5 h-3.5"/>filtered by delivery date</span>
       </div>
 
       {/* ── States ─────────────────────────────────────────── */}
@@ -515,11 +636,11 @@ const Route = () => {
                         <p className="text-[10px] font-bold tracking-widest uppercase text-gray-400 dark:text-gray-500 mb-1 flex items-center gap-1">
                           <Hash className="w-2.5 h-2.5"/>Order {stop.orderId}
                         </p>
-                        {/* Row 1: customer + badges */}
+                        {/* Row 1: recipient + badges */}
                         <div className="flex items-start justify-between gap-3 mb-1">
                           <div className="min-w-0">
                             <p className={`font-bold text-sm truncate ${isDone||isSkipped?'text-gray-400 dark:text-gray-500':'text-gray-900 dark:text-white'}`}>
-                              {stop.customer}
+                              {stop.recipient}
                             </p>
                             <p className="text-xs text-gray-400 dark:text-gray-500 flex items-center gap-1 mt-0.5 truncate">
                               <MapPin className="w-3 h-3 text-red-400 shrink-0"/>{stop.address}
@@ -570,7 +691,33 @@ const Route = () => {
                             className="flex items-center gap-1 text-xs font-semibold text-gray-500 dark:text-gray-400 hover:text-primary-600 dark:hover:text-primary-400 px-2.5 py-1.5 rounded-lg hover:bg-primary-50 dark:hover:bg-primary-900/20 transition-all">
                             <Eye className="w-3.5 h-3.5"/> View Details
                           </button>
-                          {!isDone && !isSkipped && (
+                          
+                          {/* Accept/Reject buttons for pending orders (in_warehouse, confirmed, pending) */}
+                          {!isDone && !isSkipped && !stop.rejected && !stop.accepted && 
+                           (stop.status === 'in_warehouse' || stop.status === 'confirmed' || stop.status === 'pending') && (
+                            <div className="ml-auto flex items-center gap-2">
+                              <button onClick={(e) => handleAcceptOrder(stop, e)}
+                                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white bg-green-500 hover:bg-green-600 active:scale-95 shadow-sm shadow-green-200 dark:shadow-green-900/40 transition-all">
+                                <ThumbsUp className="w-3.5 h-3.5"/>
+                                Accept
+                              </button>
+                              <button onClick={(e) => openRejectModal(stop, e)}
+                                className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white bg-red-500 hover:bg-red-600 active:scale-95 shadow-sm shadow-red-200 dark:shadow-red-900/40 transition-all">
+                                <ThumbsDown className="w-3.5 h-3.5"/>
+                                Reject
+                              </button>
+                            </div>
+                          )}
+                          
+                          {/* Rejected status indicator */}
+                          {stop.rejected && (
+                            <span className="ml-auto flex items-center gap-1 text-xs font-bold text-red-500 bg-red-50 dark:bg-red-900/30 px-3 py-1.5 rounded-full">
+                              <ThumbsDown className="w-3 h-3"/>Rejected
+                            </span>
+                          )}
+                          
+                          {/* Start delivery button for accepted orders */}
+                          {!isDone && !isSkipped && !stop.rejected && (stop.accepted || stop.status === 'accepted_by_driver') && (
                             isActive && stopPhase === 'navigating' ? (
                               <button onClick={(e) => { e.stopPropagation(); setStopPhase('action'); setShowDeliveryModal(true); }}
                                 className="ml-auto flex items-center gap-1.5 px-5 py-2 rounded-xl text-xs font-bold text-white bg-green-500 hover:bg-green-600 active:scale-95 shadow-sm shadow-green-200 dark:shadow-green-900/40 transition-all">
@@ -582,6 +729,23 @@ const Route = () => {
                                 className="ml-auto flex items-center gap-1.5 px-5 py-2 rounded-xl text-xs font-bold text-white bg-primary-500 hover:bg-primary-600 active:scale-95 shadow-sm shadow-primary-200 dark:shadow-primary-900/40 transition-all">
                                 <Navigation className="w-3.5 h-3.5"/>
                                 {isActive && stopPhase ? 'Resume' : 'Start Delivery'}
+                              </button>
+                            )
+                          )}
+                          
+                          {/* Start delivery for out_for_delivery status */}
+                          {!isDone && !isSkipped && !stop.rejected && stop.status === 'out_for_delivery' && (
+                            isActive && stopPhase === 'navigating' ? (
+                              <button onClick={(e) => { e.stopPropagation(); setStopPhase('action'); setShowDeliveryModal(true); }}
+                                className="ml-auto flex items-center gap-1.5 px-5 py-2 rounded-xl text-xs font-bold text-white bg-green-500 hover:bg-green-600 active:scale-95 shadow-sm shadow-green-200 dark:shadow-green-900/40 transition-all">
+                                <Flag className="w-3.5 h-3.5"/>
+                                I&apos;m Arrived
+                              </button>
+                            ) : (
+                              <button onClick={(e)=>handleStart(stop,e)}
+                                className="ml-auto flex items-center gap-1.5 px-5 py-2 rounded-xl text-xs font-bold text-white bg-primary-500 hover:bg-primary-600 active:scale-95 shadow-sm shadow-primary-200 dark:shadow-primary-900/40 transition-all">
+                                <Navigation className="w-3.5 h-3.5"/>
+                                {isActive && stopPhase ? 'Resume' : 'Continue Delivery'}
                               </button>
                             )
                           )}
@@ -614,7 +778,7 @@ const Route = () => {
                     {activeStop.stopNum}
                   </div>
                   <div>
-                    <p className="font-bold text-gray-900 dark:text-white text-sm leading-tight">{activeStop.customer}</p>
+                    <p className="font-bold text-gray-900 dark:text-white text-sm leading-tight">{activeStop.recipient}</p>
                     <div className="flex items-center gap-1.5 mt-0.5">
                       <Badge variant={priorityVariant(activeStop.priority)} className="text-xs">{priorityLabel(activeStop.priority)}</Badge>
                       <Badge variant="primary" className="text-xs capitalize">{activeStop.status?.replace(/_/g,' ')}</Badge>
@@ -622,7 +786,7 @@ const Route = () => {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <button onClick={()=>toast.success('Calling customer\u2026')}
+                  <button onClick={()=>toast.success('Calling recipient\u2026')}
                     className="flex items-center gap-1 text-xs font-semibold px-3 py-1.5 rounded-lg border border-gray-200 dark:border-slate-700 text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-slate-800 transition-colors">
                     <Phone className="w-3.5 h-3.5"/> Call
                   </button>
@@ -847,7 +1011,7 @@ const Route = () => {
       <Modal isOpen={showSkipModal} onClose={()=>setShowSkipModal(false)} title="Skip Stop" size="md">
         <div className="space-y-4">
           <div className="p-4 bg-orange-50 dark:bg-orange-900/20 rounded-xl">
-            <p className="font-semibold text-orange-800 dark:text-orange-200">Stop {activeStop?.stopNum} \u2014 {activeStop?.customer}</p>
+            <p className="font-semibold text-orange-800 dark:text-orange-200">Stop {activeStop?.stopNum} \u2014 {activeStop?.recipient}</p>
           </div>
           <div>
             <p className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Reason *</p>
@@ -895,6 +1059,34 @@ const Route = () => {
           <div className="flex gap-3 pt-2 border-t border-gray-100 dark:border-slate-700">
             <Button fullWidth variant="outline" onClick={()=>setShowIssueModal(false)}>Cancel</Button>
             <Button fullWidth icon={AlertTriangle} onClick={handleReportIssue} className="bg-red-500 hover:bg-red-600 text-white">Send Report</Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* ── Reject order modal ─────────────────────────── */}
+      <Modal isOpen={showRejectModal} onClose={()=>setShowRejectModal(false)} title="Reject Order" size="md">
+        <div className="space-y-4">
+          <div className="flex items-center gap-3 p-3 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700 rounded-xl">
+            <ThumbsDown className="w-5 h-5 text-red-500"/>
+            <div>
+              <p className="text-sm font-bold text-red-800 dark:text-red-200">Rejecting Order {rejectOrderId}</p>
+              <p className="text-xs text-red-600 dark:text-red-400">This order will be returned to the queue for reassignment.</p>
+            </div>
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-2">Reason for rejection *</p>
+            <div className="space-y-2">
+              {rejectReasons.map(r => (
+                <label key={r} className={`flex items-center gap-3 p-3 border-2 rounded-xl cursor-pointer transition-all ${rejectReason===r?'border-red-400 bg-red-50 dark:bg-red-900/20':'border-gray-200 dark:border-slate-700 hover:border-gray-300'}`}>
+                  <input type="radio" name="rejectReason" value={r} checked={rejectReason===r} onChange={()=>setRejectReason(r)} className="w-4 h-4 accent-red-500"/>
+                  <span className="text-sm text-gray-700 dark:text-gray-300">{r}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+          <div className="flex gap-3 pt-2 border-t border-gray-100 dark:border-slate-700">
+            <Button fullWidth variant="outline" onClick={()=>setShowRejectModal(false)}>Cancel</Button>
+            <Button fullWidth icon={ThumbsDown} onClick={handleRejectOrder} className="bg-red-500 hover:bg-red-600 text-white">Reject Order</Button>
           </div>
         </div>
       </Modal>
