@@ -167,11 +167,12 @@ const AdminOrders = () => {
 
   const copyOrderId = (id) => { navigator.clipboard.writeText(id); toast.success('Order ID copied!'); };
 
-  const getStatusColor = (status) => ({ pending: 'warning', confirmed: 'warning', picked_up: 'info', in_transit: 'primary', out_for_delivery: 'primary', in_warehouse: 'warning', delivered: 'success', cancelled: 'danger', failed: 'danger' }[status] || 'default');
-  const getStatusLabel = (status) => ({ confirmed: 'Pending', in_warehouse: 'Pending' }[status] || status?.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()));
+  const getStatusColor = (status) => ({ pending: 'warning', confirmed: 'warning', picked_up: 'info', in_transit: 'primary', out_for_delivery: 'primary', in_warehouse: 'warning', delivered: 'success', cancelled: 'danger', failed: 'danger', accepted_by_driver: 'success', rejected_by_driver: 'danger' }[status] || 'default');
+  const getStatusLabel = (status) => ({ confirmed: 'Pending', in_warehouse: 'Pending', accepted_by_driver: 'Driver Accepted', rejected_by_driver: 'Driver Rejected' }[status] || status?.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()));
 
   const statusOptions = [
     { value: 'all', label: 'All Status' }, { value: 'pending', label: 'Pending' }, { value: 'in_warehouse', label: 'Pending (In Warehouse)' },
+    { value: 'accepted_by_driver', label: 'Driver Accepted' }, { value: 'rejected_by_driver', label: 'Driver Rejected' },
     { value: 'out_for_delivery', label: 'Out for Delivery' }, { value: 'delivered', label: 'Delivered' },
     { value: 'failed', label: 'Failed' }, { value: 'cancelled', label: 'Cancelled' },
   ];
@@ -348,7 +349,7 @@ const AdminOrders = () => {
             </div>
             <div className="grid grid-cols-2 gap-4">
               {[{ icon: User, label: 'Client', value: selectedOrder.clientName || selectedOrder.client }, { icon: Truck, label: 'Driver', value: selectedOrder.driverName || 'Unassigned' },
-                { icon: MapPin, label: 'Pickup', value: selectedOrder.pickupAddress || 'Warehouse' }, { icon: MapPin, label: 'Delivery', value: selectedOrder.deliveryAddress || selectedOrder.destination }]
+                { icon: MapPin, label: 'Delivery', value: selectedOrder.deliveryAddress || selectedOrder.destination }]
                 .map((item, i) => (
                   <div key={i} className="p-4 bg-gray-50 dark:bg-slate-700/50 rounded-xl">
                     <div className="flex items-center gap-2 mb-2"><item.icon className="w-4 h-4 text-gray-400" /><span className="text-xs text-gray-500">{item.label}</span></div>

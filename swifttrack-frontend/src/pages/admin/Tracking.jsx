@@ -729,14 +729,8 @@ const AdminTracking = () => {
                     </div>
                   </div>
                   <div className="space-y-2">
-                    <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-xl">
-                      <p className="text-[10px] text-blue-600 font-bold">FROM</p>
-                      <p className="text-xs text-gray-700 dark:text-gray-300 mt-1">
-                        {order.pickupAddress || order.pickup_address || 'Warehouse'}
-                      </p>
-                    </div>
                     <div className="p-3 bg-green-50 dark:bg-green-900/20 rounded-xl">
-                      <p className="text-[10px] text-green-600 font-bold">TO</p>
+                      <p className="text-[10px] text-green-600 font-bold">DELIVERY ADDRESS</p>
                       <p className="text-xs text-gray-700 dark:text-gray-300 mt-1">
                         {order.deliveryAddress || order.delivery_address}
                       </p>
