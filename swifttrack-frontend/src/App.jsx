@@ -3,6 +3,7 @@ import { Toaster } from 'react-hot-toast';
 import { AuthProvider } from './context/AuthContext';
 import { ThemeProvider } from './context/ThemeContext';
 import { NotificationProvider } from './context/NotificationContext';
+import { GoogleMapsProvider } from './context/GoogleMapsContext';
 
 // Auth Pages
 import Login from './pages/auth/Login';
@@ -21,6 +22,7 @@ import DriverDashboard from './pages/driver/Dashboard';
 import DriverRoute from './pages/driver/Route';
 import DriverDelivery from './pages/driver/Delivery';
 import DriverPerformance from './pages/driver/Performance';
+import DriverNotifications from './pages/driver/Notifications';
 
 // Admin Pages
 import AdminDashboard from './pages/admin/Dashboard';
@@ -29,6 +31,8 @@ import AdminOrders from './pages/admin/Orders';
 import AdminLogs from './pages/admin/Logs';
 import AdminAnalytics from './pages/admin/Analytics';
 import AdminTracking from './pages/admin/Tracking';
+import AdminNotifications from './pages/admin/Notifications';
+import AdminServiceActivity from './pages/admin/ServiceActivity';
 
 // Layout Components
 import ClientLayout from './components/layout/ClientLayout';
@@ -38,12 +42,13 @@ import ProtectedRoute from './components/auth/ProtectedRoute';
 
 function App() {
   return (
-    <ThemeProvider>
-      <AuthProvider>
-        <NotificationProvider>
-          <Router>
-            <div className="min-h-screen bg-gray-50 dark:bg-slate-900 transition-colors duration-300">
-              <Routes>
+    <GoogleMapsProvider>
+      <ThemeProvider>
+        <AuthProvider>
+          <NotificationProvider>
+            <Router>
+              <div className="min-h-screen bg-gray-50 dark:bg-slate-900 transition-colors duration-300">
+                <Routes>
                 {/* Public Routes */}
                 <Route path="/login" element={<Login />} />
                 <Route path="/register" element={<Register />} />
@@ -75,6 +80,7 @@ function App() {
                   <Route path="route" element={<DriverRoute />} />
                   <Route path="delivery/:orderId" element={<DriverDelivery />} />
                   <Route path="performance" element={<DriverPerformance />} />
+                  <Route path="notifications" element={<DriverNotifications />} />
                 </Route>
 
                 {/* Admin Routes */}
@@ -90,7 +96,9 @@ function App() {
                   <Route path="tracking/:orderId" element={<AdminTracking />} />
                   <Route path="tracking" element={<AdminTracking />} />
                   <Route path="logs" element={<AdminLogs />} />
+                  <Route path="service-activity" element={<AdminServiceActivity />} />
                   <Route path="analytics" element={<AdminAnalytics />} />
+                  <Route path="notifications" element={<AdminNotifications />} />
                 </Route>
 
                 {/* Default redirect */}
@@ -113,6 +121,7 @@ function App() {
         </NotificationProvider>
       </AuthProvider>
     </ThemeProvider>
+    </GoogleMapsProvider>
   );
 }
 
