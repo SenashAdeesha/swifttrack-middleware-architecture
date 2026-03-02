@@ -347,6 +347,10 @@ def retry(
     return handler
 
 
+# Create alias for backward compatibility
+retry_with_backoff = retry
+
+
 def retry_with_circuit_breaker(
     circuit_breaker,
     max_retries: int = 3,
