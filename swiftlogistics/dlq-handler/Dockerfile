@@ -6,10 +6,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy shared utilities
-COPY ../shared /app/shared
-
-# Copy service code
+# Copy service code (shared is mounted via volume at runtime)
 COPY . .
 
 ENV PYTHONUNBUFFERED=1

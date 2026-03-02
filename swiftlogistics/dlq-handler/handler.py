@@ -30,7 +30,7 @@ from shared.database_utils import (
     BaseRepository,
     transactional
 )
-from shared.correlation import CorrelationMiddleware
+from shared.correlation import CorrelationMiddleware, correlation_middleware
 
 # =============================================================================
 # CONFIGURATION
